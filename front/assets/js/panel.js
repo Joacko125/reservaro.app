@@ -49,29 +49,33 @@ function panel() {
     _audio: null,
     _titulo: document.title,
 
-    init() {
+    async init() {
       // En Django: complejo, canchas y usuario vienen del contexto de la vista del panel.
-      this.complejo = Store.complejo() || {};
-      this.canchas = Store.canchas();
+      // El panel todavía no tiene estados de carga propios (es la tarea de otro día): espera y dibuja.
+      const [complejo, canchas, usuario, hoy] = await Promise.all([
+        Store.complejo(), Store.canchas(), Store.usuarioActual('panel'), Store.hoy(),
+      ]);
+      this.complejo = complejo || {};
+      this.canchas = canchas;
       if (this.complejo.nombre) document.title = `Panel · ${this.complejo.nombre}`;
       this._titulo = document.title;
       // Horas de inicio de los turnos: de 13 a 23 (el último termina a las 00)
       const horario = this.complejo.horario || { desde: 13, hasta: 24 };
       this.horas = Array.from({ length: horario.hasta - horario.desde }, (_, i) => horario.desde + i);
       this.logoOk = Boolean(this.complejo.logo);
-      this.usuario = Store.usuarioActual('panel');
-      this.hoy = Store.hoy();
+      this.usuario = usuario;
+      this.hoy = hoy;
       this.fecha = this.hoy;
       this.horaActual = horaArgentina();
-      this.recargar();
+      await this.recargar();
 
       // En Django: esto se reemplaza por polling o websockets contra el servidor.
       Store.alCambiar((cambio) => this.alCambiarDatos(cambio));
 
       // El componente login-telefono avisa cuando el dueño terminó de entrar.
-      window.addEventListener('sesion-iniciada', (e) => {
+      window.addEventListener('sesion-iniciada', async (e) => {
         if (e.detail.ambito !== 'panel') return;
-        this.usuario = Store.usuarioActual('panel');
+        this.usuario = await Store.usuarioActual('panel');
         this.recargar();
       });
 
@@ -82,8 +86,8 @@ function panel() {
       });
 
       // Cada minuto actualiza "ahora" y, a la medianoche, pasa al día nuevo.
-      setInterval(() => {
-        const hoy = Store.hoy();
+      setInterval(async () => {
+        const hoy = await Store.hoy();
         if (hoy !== this.hoy) {
           if (this.fecha === this.hoy) this.fecha = hoy;
           this.hoy = hoy;
@@ -95,8 +99,8 @@ function panel() {
 
     // --- Sesión ---
 
-    salir() {
-      Store.logout('panel');
+    async salir() {
+      await Store.logout('panel');
       this.usuario = null;
       this.cerrarModales();
       this.iconos();
@@ -139,16 +143,16 @@ function panel() {
 
     // Vuelve a los datos de ejemplo. Si el reinicio cierra la sesión, el dueño vuelve a entrar
     // solo, así la presentación no se corta.
-    reiniciarDemo() {
+    async reiniciarDemo() {
       const usuario = this.usuario;
-      Store.reiniciarDemo();
-      if (usuario && !Store.usuarioActual('panel')) {
-        this.usuario = Store.login(usuario.telefono, usuario.nombre, 'panel');
+      await Store.reiniciarDemo();
+      if (usuario && !(await Store.usuarioActual('panel'))) {
+        this.usuario = await Store.login(usuario.telefono, usuario.nombre, 'panel');
       }
       this.cerrarModales();
       this.vista = 'agenda';
       this.fecha = this.hoy;
-      this.recargar();
+      await this.recargar();
       window.scrollTo({ top: 0, behavior: 'smooth' });
       this.mostrarAviso({ tipo: 'ok', titulo: 'Demo reiniciada', texto: 'Volvieron las reservas de ejemplo y los turnos fijos quedaron vacíos.' });
     },
@@ -180,21 +184,33 @@ function panel() {
 
     // --- Datos ---
 
-    recargar() {
-      this.dias = Store.proximosDias(14);
-      this.columnas = this.canchas.map((cancha) => this.armarColumna(cancha));
-      this.resumen = this.calcularResumen();
-      // En Django: esto viene de la vista de turnos fijos del panel.
-      this.fijos = Store.turnosFijos();
+    // Pide todo junto y recién después dibuja. Si llega tarde (cambiaron de día), se descarta.
+    async recargar() {
+      const pedido = (this._pedido = (this._pedido || 0) + 1);
+      const fecha = this.fecha;
+      const [dias, delDia, reservasDelDia, deHoy, reservasDeHoy, fijos] = await Promise.all([
+        Store.proximosDias(14),
+        Store.turnosDelDia(fecha),
+        Store.reservasDelDia(fecha),
+        Store.turnosDelDia(this.hoy),
+        Store.reservasDelDia(this.hoy),
+        // En Django: esto viene de la vista de turnos fijos del panel.
+        Store.turnosFijos(),
+      ]);
+      if (pedido !== this._pedido) return;
+      this.dias = dias;
+      this.columnas = this.canchas.map((cancha) => this.armarColumna(cancha, delDia, reservasDelDia));
+      this.resumen = this.calcularResumen(deHoy, reservasDeHoy);
+      this.fijos = fijos;
       this.refrescarDetalle();
       this.iconos();
     },
 
     // Bloques de una cancha para el día elegido: una reserva de varias horas es un solo bloque.
-    armarColumna(cancha) {
-      // En Django: esto viene de la vista de agenda del panel.
-      const turnos = Store.turnosDelDia(this.fecha, cancha.id);
-      const reservas = Store.reservasDelDia(this.fecha).filter((r) => r.canchaId === cancha.id);
+    // En Django: los turnos y las reservas vienen de la vista de agenda del panel.
+    armarColumna(cancha, turnosDelDia, reservasDelDia) {
+      const turnos = turnosDelDia.filter((t) => t.canchaId === cancha.id);
+      const reservas = reservasDelDia.filter((r) => r.canchaId === cancha.id);
       const ultima = this.horas[this.horas.length - 1];
       const bloques = [];
 
@@ -236,11 +252,10 @@ function panel() {
     },
 
     // El resumen es siempre de hoy, aunque la agenda muestre otro día.
-    calcularResumen() {
-      const turnos = this.canchas.flatMap((c) => Store.turnosDelDia(this.hoy, c.id));
+    calcularResumen(turnos, reservasDeHoy) {
       const libres = turnos.filter((t) => t.estado === 'libre');
       const reservados = turnos.length - libres.length;
-      const pagadas = Store.reservasDelDia(this.hoy).filter((r) => r.senaPagada);
+      const pagadas = reservasDeHoy.filter((r) => r.senaPagada);
       const suma = (lista) => lista.reduce((total, r) => total + (r.sena || 0), 0);
 
       return {
@@ -257,12 +272,12 @@ function panel() {
 
     // --- En vivo ---
 
-    alCambiarDatos({ tipo, datos }) {
+    async alCambiarDatos({ tipo, datos }) {
       if (tipo === 'demo-reiniciada') {
         // Aunque se reinicie desde otra pestaña, el dueño sigue adentro del panel.
         const antes = this.usuario;
-        this.usuario = Store.usuarioActual('panel');
-        if (antes && !this.usuario) this.usuario = Store.login(antes.telefono, antes.nombre, 'panel');
+        this.usuario = await Store.usuarioActual('panel');
+        if (antes && !this.usuario) this.usuario = await Store.login(antes.telefono, antes.nombre, 'panel');
         this.cerrarModales();
         this.fecha = this.hoy;
       }
@@ -273,7 +288,7 @@ function panel() {
       // Si la reserva del jugador es de otro día, la agenda salta a ese día para que se vea.
       if (deJugador) this.vista = 'agenda';
       if (deJugador && reserva.fecha && reserva.fecha !== this.fecha) this.fecha = reserva.fecha;
-      this.recargar();
+      await this.recargar();
 
       if (reserva && this.usuario) this.resaltar(reserva);
       if (deJugador) this.anunciar(reserva);
@@ -386,7 +401,7 @@ function panel() {
       return this.form ? this.senaPorHora * this.form.horas : 0;
     },
 
-    guardarManual() {
+    async guardarManual() {
       const f = this.form;
       const nombre = f.nombre.trim();
       const telefono = Store.normalizarTelefono(f.telefono);
@@ -401,7 +416,9 @@ function panel() {
       }
 
       // En Django: POST a la vista de reserva manual del panel.
-      const resultado = Store.reservar({
+      let resultado;
+      try {
+        resultado = await Store.reservar({
         canchaId: f.cancha.id,
         fecha: f.fecha,
         hora: f.hora,
@@ -410,7 +427,11 @@ function panel() {
         telefono,
         origen: 'manual',
         medioSena: f.senaEfectivo ? 'efectivo' : null,
-      });
+        });
+      } catch (error) {
+        f.error = 'No se pudo guardar: revisá la conexión y probá de nuevo.';
+        return;
+      }
 
       if (!resultado.ok) {
         f.error = resultado.error || 'No se pudo guardar la reserva.';
@@ -455,17 +476,17 @@ function panel() {
 
     // Tocar de nuevo la opción marcada la deshace.
     // En Django: POST a la vista de asistencia.
-    marcarAsistencia(estado) {
+    async marcarAsistencia(estado) {
       const r = this.detalle.reserva;
-      Store.marcarAsistencia(r.id, r.asistencia === estado ? null : estado);
-      this.recargar();
+      await Store.marcarAsistencia(r.id, r.asistencia === estado ? null : estado);
+      await this.recargar();
     },
 
     // En Django: POST a la vista que registra la seña en efectivo.
-    cobrarSenaEfectivo() {
+    async cobrarSenaEfectivo() {
       const r = this.detalle.reserva;
-      Store.marcarSenaEfectivo(r.id);
-      this.recargar();
+      await Store.marcarSenaEfectivo(r.id);
+      await this.recargar();
       this.mostrarAviso({ tipo: 'ok', titulo: 'Seña cobrada en efectivo', texto: r.nombre + (r.sena ? ' · ' + Fmt.pesos(r.sena) : '') });
     },
 
@@ -506,7 +527,7 @@ function panel() {
       return this.formFijo ? Math.min(PANEL_MAX_HORAS_MANUAL, 24 - this.formFijo.hora) : 1;
     },
 
-    guardarFijo() {
+    async guardarFijo() {
       const f = this.formFijo;
       const responsable = f.responsable.trim();
       const telefono = Store.normalizarTelefono(f.telefono);
@@ -521,14 +542,20 @@ function panel() {
       }
 
       // En Django: POST a la vista de turnos fijos.
-      const resultado = Store.crearTurnoFijo({
+      let resultado;
+      try {
+        resultado = await Store.crearTurnoFijo({
         canchaId: f.canchaId,
         diaSemana: f.diaSemana,
         hora: f.hora,
         horas: f.horas,
         responsable,
         telefono,
-      });
+        });
+      } catch (error) {
+        f.error = 'No se pudo guardar: revisá la conexión y probá de nuevo.';
+        return;
+      }
 
       if (!resultado.ok) {
         f.error = resultado.error || 'No se pudo guardar el turno fijo.';
@@ -536,12 +563,12 @@ function panel() {
       }
 
       this.formFijo = null;
-      this.recargar();
+      await this.recargar();
       this.mostrarAviso({ tipo: 'ok', titulo: 'Turno fijo guardado', texto: this.textoFijo(resultado.turnoFijo || f) });
     },
 
     // Borrar pide confirmación: el primer toque arma el botón y el segundo borra.
-    borrarFijo(fijo) {
+    async borrarFijo(fijo) {
       if (this.borrando !== fijo.id) {
         clearTimeout(this._timerBorrar);
         this.borrando = fijo.id;
@@ -551,8 +578,8 @@ function panel() {
       clearTimeout(this._timerBorrar);
       this.borrando = null;
       // En Django: POST a la vista que borra el turno fijo.
-      Store.borrarTurnoFijo(fijo.id);
-      this.recargar();
+      await Store.borrarTurnoFijo(fijo.id);
+      await this.recargar();
       this.mostrarAviso({ tipo: 'ok', titulo: 'Turno fijo borrado', texto: fijo.responsable + ' · ' + this.textoFijo(fijo) });
     },
 

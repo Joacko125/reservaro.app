@@ -18,7 +18,7 @@
   <link rel="stylesheet" href="/assets/css/estilos.css">
   <script src="https://unpkg.com/lucide@0.460.0/dist/umd/lucide.min.js"></script>
   <script src="/assets/js/formato.js"></script>
-  <script src="/assets/js/store.js"></script>
+  <script src="/assets/js/store-demo.js"></script>
   <script src="/assets/js/include.js"></script>
   <script src="/assets/js/plano.js"></script>
   <script src="/assets/js/login-telefono.js"></script>
@@ -57,8 +57,31 @@
 
   <main class="mx-auto max-w-md px-4 pb-40">
 
+    <!-- Página cargando: esqueleto con la forma de la pantalla -->
+    <div x-show="estado === 'cargando'" class="mt-4 animate-pulse space-y-6" aria-busy="true" aria-label="Cargando">
+      <div class="h-56 rounded-3xl bg-club/30"></div>
+      <div class="h-64 rounded-3xl bg-marca-claro/5"></div>
+      <div class="flex gap-2">
+        <template x-for="i in 5" :key="i"><div class="h-20 w-[4.75rem] shrink-0 rounded-2xl bg-marca-claro/5"></div></template>
+      </div>
+      <div class="space-y-2">
+        <template x-for="i in 4" :key="i"><div class="h-16 rounded-2xl bg-marca-claro/5"></div></template>
+      </div>
+    </div>
+
+    <!-- Página con error: no se pudo traer el complejo -->
+    <div x-cloak x-show="estado === 'error'" class="mt-10 flex flex-col items-center rounded-3xl bg-marca-claro/5 px-5 py-10 text-center ring-1 ring-inset ring-marca-claro/10">
+      <span class="grid h-14 w-14 place-items-center rounded-2xl bg-alerta/15 text-alerta"><i data-lucide="wifi-off" class="h-7 w-7"></i></span>
+      <p class="mt-4 font-titulo text-2xl font-extrabold uppercase">No pudimos cargar los turnos</p>
+      <p class="mt-1 text-sm text-marca-claro/70">Revisá tu conexión y probá de nuevo.</p>
+      <button type="button" @click="cargar()"
+              class="mt-5 inline-flex h-12 items-center gap-2 rounded-2xl bg-marca px-6 font-semibold text-marca-oscuro transition hover:brightness-105 active:scale-[0.98]">
+        <i data-lucide="rotate-cw" class="h-5 w-5"></i>Reintentar
+      </button>
+    </div>
+
     <!-- Encabezado del complejo. En Django: los datos vienen del modelo Complejo -->
-    <header class="relative mt-4 overflow-hidden rounded-3xl bg-gradient-to-br from-club to-club-oscuro p-5 shadow-xl shadow-club/20">
+    <header x-cloak x-show="estado === 'listo'" class="relative mt-4 overflow-hidden rounded-3xl bg-gradient-to-br from-club to-club-oscuro p-5 shadow-xl shadow-club/20">
       <!-- Líneas de cancha de fondo -->
       <div aria-hidden="true" class="pointer-events-none absolute inset-0">
         <div class="absolute -right-14 -top-14 h-44 w-44 rounded-full border-2 border-marca-claro/15"></div>
@@ -114,12 +137,12 @@
     </header>
 
     <!-- Plano del predio (lo hace PC 3) -->
-    <section class="mt-6" aria-label="Plano del predio">
+    <section x-cloak x-show="estado === 'listo'" class="mt-6" aria-label="Plano del predio">
       <div data-include="/componentes/plano.html"></div>
     </section>
 
     <!-- Tira de días -->
-    <section class="mt-8" aria-labelledby="dias-titulo">
+    <section x-cloak x-show="estado === 'listo'" class="mt-8" aria-labelledby="dias-titulo">
       <h2 id="dias-titulo" class="font-titulo text-2xl font-extrabold uppercase tracking-wide">Elegí el día</h2>
       <div class="-mx-4 mt-3 flex snap-x gap-2 overflow-x-auto px-4 pb-2 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
         <template x-for="(dia, indice) in dias" :key="dia">
@@ -139,7 +162,7 @@
     </section>
 
     <!-- Grilla de turnos. En Django: los turnos vienen de la vista de turnos del día -->
-    <section x-ref="grilla" class="mt-6 scroll-mt-4" aria-labelledby="turnos-titulo">
+    <section x-cloak x-show="estado === 'listo'" x-ref="grilla" class="mt-6 scroll-mt-4" aria-labelledby="turnos-titulo">
       <div class="flex items-end justify-between gap-3">
         <div>
           <h2 id="turnos-titulo" class="font-titulo text-2xl font-extrabold uppercase tracking-wide">Elegí tu turno</h2>
@@ -175,7 +198,32 @@
         </template>
       </div>
 
-      <div class="mt-1 space-y-2 transition duration-200"
+      <!-- Grilla cargando -->
+      <div x-show="estadoTurnos === 'cargando'" class="mt-1 animate-pulse space-y-2" aria-busy="true" aria-label="Cargando turnos">
+        <template x-for="i in 6" :key="i">
+          <div class="grid grid-cols-[3.25rem_1fr_1fr] items-center gap-2">
+            <span class="ml-auto h-4 w-9 rounded bg-marca-claro/10"></span>
+            <span class="h-16 rounded-2xl bg-marca-claro/5"></span>
+            <span class="h-16 rounded-2xl bg-marca-claro/5"></span>
+          </div>
+        </template>
+      </div>
+
+      <!-- Grilla con error -->
+      <div x-cloak x-show="estadoTurnos === 'error'" class="mt-3 flex flex-col items-center rounded-3xl bg-marca-claro/5 px-5 py-8 text-center ring-1 ring-inset ring-marca-claro/10">
+        <p class="font-semibold">No pudimos traer los turnos de este día.</p>
+        <button type="button" @click="reintentarTurnos()"
+                class="mt-4 inline-flex h-11 items-center gap-2 rounded-xl bg-marca-claro/10 px-4 text-sm font-semibold transition hover:bg-marca-claro/15">
+          <i data-lucide="rotate-cw" class="h-4 w-4"></i>Reintentar
+        </button>
+      </div>
+
+      <!-- Grilla vacía: ese día no hay turnos -->
+      <div x-cloak x-show="estadoTurnos === 'listo' && !filas.length" class="mt-3 rounded-3xl bg-marca-claro/5 px-5 py-8 text-center text-sm text-marca-claro/70 ring-1 ring-inset ring-marca-claro/10">
+        Este día no hay turnos. Elegí otro día.
+      </div>
+
+      <div x-show="estadoTurnos === 'listo'" class="mt-1 space-y-2 transition duration-200"
            :class="cambiando ? 'translate-y-2 opacity-0' : 'translate-y-0 opacity-100'">
         <template x-for="fila in filas" :key="fecha + '-' + fila.hora">
           <div class="grid grid-cols-[3.25rem_1fr_1fr] items-center gap-2">
@@ -209,7 +257,7 @@
     </section>
 
     <!-- Lo que viene (lo hace PC 3) -->
-    <section class="mt-10" aria-label="Próximamente">
+    <section x-cloak x-show="estado === 'listo'" class="mt-10" aria-label="Próximamente">
       <div data-include="/componentes/proximamente.html"></div>
     </section>
 
@@ -500,7 +548,19 @@
       </div>
 
       <!-- Lista. En Django: {% for reserva in reservas %} -->
-      <ul x-show="misReservas.length" class="mt-5 space-y-3">
+      <!-- Mis reservas: cargando y error -->
+      <div x-show="estadoMisReservas === 'cargando'" class="mt-5 animate-pulse space-y-3" aria-busy="true">
+        <template x-for="i in 2" :key="i"><div class="h-24 rounded-3xl bg-marca-claro/5"></div></template>
+      </div>
+      <div x-cloak x-show="estadoMisReservas === 'error'" class="mt-6 flex flex-col items-center rounded-3xl bg-marca-claro/5 px-5 py-8 text-center ring-1 ring-inset ring-marca-claro/10">
+        <p class="font-semibold">No pudimos traer tus reservas.</p>
+        <button type="button" @click="cargarMisReservas()"
+                class="mt-4 inline-flex h-11 items-center gap-2 rounded-xl bg-marca-claro/10 px-4 text-sm font-semibold transition hover:bg-marca-claro/15">
+          <i data-lucide="rotate-cw" class="h-4 w-4"></i>Reintentar
+        </button>
+      </div>
+
+      <ul x-show="estadoMisReservas === 'listo' && misReservas.length" class="mt-5 space-y-3">
         <template x-for="item in misReservas" :key="item.reserva.id">
           <li class="flex items-center gap-3 rounded-3xl bg-marca-claro/5 p-3 ring-1 ring-inset ring-marca-claro/10">
             <div class="flex h-16 w-16 shrink-0 flex-col items-center justify-center rounded-2xl bg-marca text-marca-oscuro">
@@ -525,7 +585,7 @@
       </ul>
 
       <!-- Sin reservas -->
-      <div x-show="!misReservas.length" class="mt-6 flex flex-col items-center rounded-3xl bg-marca-claro/5 px-5 py-8 text-center ring-1 ring-inset ring-marca-claro/10">
+      <div x-show="estadoMisReservas === 'listo' && !misReservas.length" class="mt-6 flex flex-col items-center rounded-3xl bg-marca-claro/5 px-5 py-8 text-center ring-1 ring-inset ring-marca-claro/10">
         <span class="grid h-14 w-14 place-items-center rounded-2xl bg-marca/15 text-marca">
           <i data-lucide="calendar-x" class="h-7 w-7"></i>
         </span>

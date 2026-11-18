@@ -21,6 +21,7 @@ const COMPLEJO = {
   colores: { DEFAULT: '#4F8A10', claro: '#B0E03C', oscuro: '#2E5408' },
   horario: { desde: 13, hasta: 24 },          // el último turno es de 23:00 a 00:00 (A CONFIRMAR con el dueño)
   duracionTurno: 1,                           // en horas
+  ventanaDias: 14,                            // el jugador reserva hasta 2 semanas adelante (pedido del dueño)
   senaPorHora: 5000,                          // A CONFIRMAR: no lo volvió a mencionar
   // Seña por transferencia mientras no esté Mercado Pago
   pagos: {

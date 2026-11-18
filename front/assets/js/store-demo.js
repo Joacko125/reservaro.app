@@ -1,7 +1,23 @@
-// Store: la ÚNICA puerta a los datos de la demo.
+// Store de la DEMO: la ÚNICA puerta a los datos mientras no esté la API de Django.
 // Ninguna pantalla lee ni escribe localStorage por su cuenta: todo pasa por acá.
 // Todo se guarda con el prefijo 'reservando:'.
-// En Django: este archivo se reemplaza por llamadas a las vistas y las pantallas quedan iguales.
+//
+// TODOS los métodos son async (devuelven una Promise), igual que van a ser las llamadas a la API:
+//   const turnos = await Store.turnosDelDia(fecha);
+// Por dentro sigue usando localStorage. Cuando esté el backend, este archivo se cambia por
+// store-api.js (mismos nombres, mismas respuestas, con fetch) y las pantallas no se tocan.
+//
+// Dos maneras de "fallar":
+//   - Reglas del negocio (turno ocupado, teléfono mal escrito...): la Promise se resuelve con
+//     { ok: false, error: 'texto para mostrar' }. Igual que antes.
+//   - Problemas de red o del servidor: la Promise se RECHAZA (throw). Las pantallas lo agarran
+//     con try/catch y muestran su estado de error con "Reintentar".
+//
+// Para probar los estados de carga y de error, agregá a la dirección:
+//   ?lento            → cada llamada tarda 1,5 s (para ver los "cargando")
+//   ?fallar=todo      → todas las llamadas fallan (para ver los "error")
+//   ?fallar=turnosDelDia,reservasDeUsuario → fallan solo esos métodos
+// Las excepciones sin espera: alCambiar (suscribirse a cambios) y normalizarTelefono (no toca datos).
 const Store = (() => {
   const PREFIJO = 'reservando:';
   const CLAVES = {
@@ -258,7 +274,8 @@ const Store = (() => {
       return ahora().fecha;
     },
 
-    proximosDias(n = 7) {
+    // Por defecto, la ventana de reserva del complejo (complejo().ventanaDias)
+    proximosDias(n = COMPLEJO.ventanaDias || 7) {
       const hoy = ahora().fecha;
       return Array.from({ length: n }, (_, i) => sumarDias(hoy, i));
     },
@@ -313,6 +330,11 @@ const Store = (() => {
         ? datos.fecha < momento.fecha || (datos.fecha === momento.fecha && hora < momento.hora)
         : yaEmpezo(datos.fecha, hora, momento);
       if (empezo) return fallo('Ese horario ya pasó.');
+      // Desde la web se reserva hasta el último día de la ventana; el dueño carga cualquier fecha
+      const ultimoDia = sumarDias(momento.fecha, (COMPLEJO.ventanaDias || 7) - 1);
+      if (origen === 'web' && datos.fecha > ultimoDia) {
+        return fallo(`Se puede reservar hasta ${COMPLEJO.ventanaDias || 7} días para adelante.`);
+      }
 
       const nombre = String(datos.nombre || '').trim();
       if (!nombre) return fallo('Falta el nombre.');
@@ -457,12 +479,12 @@ const Store = (() => {
 
     // ----- Sesión. Ámbitos 'jugador' y 'panel', independientes entre sí -----
 
-    // Devuelve el código simulado de 4 dígitos (null si el teléfono no es válido).
+    // Devuelve el código simulado de 6 dígitos (null si el teléfono no es válido).
     // En Django: acá se manda el código por WhatsApp y no se devuelve nunca
     enviarCodigo(telefono) {
       const numero = normalizarTelefono(telefono);
       if (!numero) return null;
-      const codigo = String(1000 + Math.floor(Math.random() * 9000));
+      const codigo = String(100000 + Math.floor(Math.random() * 900000));
       const codigos = leer(CLAVES.codigos, {});
       codigos[numero] = codigo;
       guardar(CLAVES.codigos, codigos);
@@ -535,5 +557,29 @@ const Store = (() => {
     },
   };
 
-  return api;
+  // ---------- Capa async ----------
+  // Envuelve cada método en una Promise con una demora chica, como si viajara al servidor.
+
+  const SIN_ESPERA = ['alCambiar', 'normalizarTelefono'];
+  const parametros = new URLSearchParams(typeof location !== 'undefined' ? location.search : '');
+  const LENTO = parametros.has('lento');
+  const FALLAN = (parametros.get('fallar') || '').split(',').map((nombre) => nombre.trim()).filter(Boolean);
+  const esperar = () => new Promise((listo) => setTimeout(listo, LENTO ? 1500 : 120 + Math.random() * 180));
+
+  const publica = {};
+  Object.keys(api).forEach((nombre) => {
+    if (SIN_ESPERA.includes(nombre)) {
+      publica[nombre] = api[nombre];
+      return;
+    }
+    publica[nombre] = async (...argumentos) => {
+      await esperar();
+      if (FALLAN.includes('todo') || FALLAN.includes(nombre)) {
+        throw new Error(`Store (demo): falla simulada en ${nombre}`);
+      }
+      return api[nombre](...argumentos);
+    };
+  });
+
+  return Object.freeze(publica);
 })();

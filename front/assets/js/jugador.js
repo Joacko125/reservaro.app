@@ -1,12 +1,27 @@
 // Lógica de la app del jugador (index.html), usada con x-data="jugador()".
-// Todo pasa por Store: en Django, Store se reemplaza por vistas y este archivo queda igual.
+// Todo pasa por Store con await: en Django, Store pide a la API y este archivo queda igual.
 // Dispara 'cambio-horario' { fecha, hora } y escucha 'cancha-elegida' { canchaId } (del plano).
+//
+// Patrón de carga (el mismo en cada componente):
+//   estado = 'cargando' → se muestra el esqueleto
+//   estado = 'listo'    → los datos (y si la lista vino vacía, el mensaje de vacío)
+//   estado = 'error'    → un mensaje y el botón "Reintentar"
+// Acá hay tres: estado (la página entera), estadoTurnos (la grilla del día) y estadoMisReservas.
+// Las recargas por cambios en vivo son "silenciosas": no vuelven a mostrar el esqueleto.
+
+// Mientras carga, el complejo trae valores vacíos para que el HTML no rompa
+const COMPLEJO_VACIO = { nombre: '', bajada: '', subdominio: '', direccion: '', logo: '', whatsapp: '', senaPorHora: 0, horario: { desde: 0, hasta: 0 } };
+
 function jugador() {
   return {
-    complejo: {},
+    estado: 'cargando',           // la página: 'cargando' | 'listo' | 'error'
+    estadoTurnos: 'cargando',     // la grilla del día elegido
+    estadoMisReservas: 'listo',   // la hoja "Mis reservas"
+    _pedidoTurnos: 0,             // para descartar respuestas viejas si cambia de día rápido
+    complejo: COMPLEJO_VACIO,
     canchas: [],
     horas: [],           // horas de inicio de los turnos: 13..23
-    dias: [],            // próximos 7 días, 'AAAA-MM-DD'
+    dias: [],            // los días de la ventana de reserva (14), 'AAAA-MM-DD'
     libresPorDia: {},    // { 'AAAA-MM-DD': cantidad de turnos libres }
     fecha: null,
     turnos: [],          // [Turno] del día elegido, de las dos canchas
@@ -25,64 +40,122 @@ function jugador() {
     mensaje: '',
     temporizadorMensaje: null,
 
-    init() {
-      // En Django: complejo, canchas y usuario vienen del contexto de la vista del complejo
-      this.complejo = Store.complejo();
-      this.canchas = Store.canchas();
-      document.title = `${this.complejo.nombre} · Reservá tu cancha`;
-      this.usuario = Store.usuarioActual('jugador');
-      const { desde, hasta } = this.complejo.horario;
-      this.horas = Array.from({ length: hasta - desde }, (_, i) => desde + i);
-      this.dias = Store.proximosDias(7);
-
-      this.fecha = this.dias[0];
-      this.actualizar();
-      // Si hoy ya no queda ningún turno por jugar, arrancamos mostrando mañana
-      if (!this.turnos.some((turno) => !turno.pasado)) {
-        this.fecha = this.dias[1];
-        this.actualizar();
-      }
-      this.horaMirada = this.primeraHoraDisponible();
-
+    async init() {
+      // Los oyentes van antes del primer await, así no se pierde ningún evento mientras carga
       window.addEventListener('cancha-elegida', (evento) => this.alElegirCancha(evento.detail.canchaId));
       window.addEventListener('sesion-iniciada', (evento) => this.alIniciarSesion(evento.detail));
-      // El plano llega con include.js: le avisamos el horario cuando ya está escuchando
-      const avisarAlPlano = () => setTimeout(() => this.avisarHorario(), 0);
-      if (window.componentesListos) avisarAlPlano();
-      else window.addEventListener('componentes-listos', avisarAlPlano, { once: true });
 
       // Si entra una reserva (en esta pestaña o en otra) la grilla se repinta sola
-      Store.alCambiar(({ tipo }) => {
+      Store.alCambiar(async ({ tipo }) => {
+        if (this.estado !== 'listo') return;
         // Reiniciar la demo cierra las sesiones
-        if (tipo === 'demo-reiniciada') this.usuario = Store.usuarioActual('jugador');
-        this.actualizar();
+        if (tipo === 'demo-reiniciada') {
+          try {
+            this.usuario = await Store.usuarioActual('jugador');
+          } catch (error) { /* se resuelve en la próxima recarga */ }
+        }
+        this.actualizar({ silencioso: true });
       });
+
+      await this.cargar();
     },
 
     // ---------- Datos ----------
 
-    actualizar() {
-      // En Django: esto viene de la vista de turnos del día
-      this.turnos = Store.turnosDelDia(this.fecha);
-      this.filas = this.horas.map((hora) => ({
-        hora,
-        turnos: this.canchas.map((cancha) => this.turno(cancha.id, hora)),
-      }));
-      this.libresPorDia = Object.fromEntries(this.dias.map((dia) => [
-        dia,
-        Store.turnosDelDia(dia).filter((turno) => turno.estado === 'libre' && !turno.pasado).length,
-      ]));
-      this.cargarMisReservas();
+    // Carga de la página: complejo, canchas, sesión, días y la grilla del primer día
+    async cargar() {
+      this.estado = 'cargando';
+      try {
+        // En Django: complejo, canchas y usuario vienen de la vista del complejo
+        const [complejo, canchas, usuario, dias] = await Promise.all([
+          Store.complejo(),
+          Store.canchas(),
+          Store.usuarioActual('jugador'),
+          Store.proximosDias(), // la ventana del complejo: complejo().ventanaDias
+        ]);
+        this.complejo = complejo;
+        this.canchas = canchas;
+        this.usuario = usuario;
+        this.dias = dias;
+        document.title = `${complejo.nombre} · Reservá tu cancha`;
+        const { desde, hasta } = complejo.horario;
+        this.horas = Array.from({ length: hasta - desde }, (_, i) => desde + i);
+
+        this.fecha = this.dias[0];
+        await this.actualizar();
+        // Si hoy ya no queda ningún turno por jugar, arrancamos mostrando mañana
+        if (this.estadoTurnos === 'listo' && !this.turnos.some((turno) => !turno.pasado) && this.dias[1]) {
+          this.fecha = this.dias[1];
+          await this.actualizar();
+        }
+        this.horaMirada = this.primeraHoraDisponible();
+        this.estado = 'listo';
+      } catch (error) {
+        console.error('jugador: no se pudo cargar la página', error);
+        this.estado = 'error';
+        return;
+      }
+
+      // El plano llega con include.js: le avisamos el horario cuando ya está escuchando
+      const avisarAlPlano = () => setTimeout(() => this.avisarHorario(), 0);
+      if (window.componentesListos) avisarAlPlano();
+      else window.addEventListener('componentes-listos', avisarAlPlano, { once: true });
+      this.$nextTick(() => window.lucide && lucide.createIcons());
+    },
+
+    // Turnos del día elegido y libres de cada día de la tira.
+    // En Django: conviene una sola vista que devuelva los libres de los 14 días juntos.
+    async actualizar({ silencioso = false } = {}) {
+      const pedido = ++this._pedidoTurnos;
+      if (!silencioso) this.estadoTurnos = 'cargando';
+      try {
+        const porDia = await Promise.all(this.dias.map((dia) => Store.turnosDelDia(dia)));
+        if (pedido !== this._pedidoTurnos) return; // llegó tarde: ya se pidió otro día
+        const indice = this.dias.indexOf(this.fecha);
+        this.turnos = indice >= 0 ? porDia[indice] : await Store.turnosDelDia(this.fecha);
+        this.filas = this.horas.map((hora) => ({
+          hora,
+          turnos: this.canchas.map((cancha) => this.turno(cancha.id, hora)),
+        }));
+        this.libresPorDia = Object.fromEntries(this.dias.map((dia, i) => [
+          dia,
+          porDia[i].filter((turno) => turno.estado === 'libre' && !turno.pasado).length,
+        ]));
+        this.estadoTurnos = 'listo';
+      } catch (error) {
+        if (pedido !== this._pedidoTurnos) return;
+        console.error('jugador: no se pudieron cargar los turnos', error);
+        // En una recarga silenciosa se dejan los datos que ya se veían
+        if (!silencioso) this.estadoTurnos = 'error';
+        return;
+      }
       this.revisarSeleccion();
+      await this.cargarMisReservas({ silencioso: true });
+    },
+
+    // Botón "Reintentar" de la grilla
+    reintentarTurnos() {
+      this.actualizar();
     },
 
     // En Django: esto viene de la vista "Mis reservas"
-    cargarMisReservas() {
+    async cargarMisReservas({ silencioso = false } = {}) {
       if (!this.usuario) {
         this.misReservas = [];
+        this.estadoMisReservas = 'listo';
         return;
       }
-      this.misReservas = Store.reservasDeUsuario(this.usuario.telefono).map((reserva) => ({
+      if (!silencioso) this.estadoMisReservas = 'cargando';
+      let reservas;
+      try {
+        reservas = await Store.reservasDeUsuario(this.usuario.telefono);
+      } catch (error) {
+        console.error('jugador: no se pudieron cargar tus reservas', error);
+        if (!silencioso) this.estadoMisReservas = 'error';
+        return;
+      }
+      this.estadoMisReservas = 'listo';
+      this.misReservas = reservas.map((reserva) => ({
         reserva,
         cancha: this.nombreCancha(reserva.canchaId),
         etiquetaDia: this.nombreDia(reserva.fecha, this.dias.indexOf(reserva.fecha)),
@@ -124,19 +197,19 @@ function jugador() {
 
     // ---------- Días ----------
 
-    elegirDia(fecha) {
+    async elegirDia(fecha) {
       if (fecha === this.fecha) return;
       this.cambiando = true;
-      setTimeout(() => {
-        this.fecha = fecha;
-        this.seleccion = null;
-        this.actualizar();
-        // Se mantiene la hora que estaba mirando, si ese día todavía sirve
-        const sigue = this.turnos.some((turno) => turno.hora === this.horaMirada && !turno.pasado);
-        if (!sigue) this.horaMirada = this.primeraHoraDisponible();
-        this.avisarHorario();
-        this.cambiando = false;
-      }, 150);
+      await new Promise((listo) => setTimeout(listo, 150));
+      this.fecha = fecha;
+      this.seleccion = null;
+      this.cambiando = false;
+      await this.actualizar();
+      if (this.fecha !== fecha || this.estadoTurnos !== 'listo') return;
+      // Se mantiene la hora que estaba mirando, si ese día todavía sirve
+      const sigue = this.turnos.some((turno) => turno.hora === this.horaMirada && !turno.pasado);
+      if (!sigue) this.horaMirada = this.primeraHoraDisponible();
+      this.avisarHorario();
     },
 
     // 'Hoy', 'Mañana' y después el día de la semana ('Vie')
@@ -265,8 +338,8 @@ function jugador() {
     // El ícono de arriba: con sesión abre "Mis reservas"; sin sesión pide el celular primero
     abrirMisReservas() {
       if (!this.usuario) return this.pedirLogin('mis-reservas');
-      this.cargarMisReservas();
       this.paso = 'mis-reservas';
+      this.cargarMisReservas();
     },
 
     pedirLogin(despues) {
@@ -277,15 +350,21 @@ function jugador() {
     alIniciarSesion({ ambito, usuario }) {
       if (ambito !== 'jugador') return;
       this.usuario = usuario;
-      this.cargarMisReservas();
+      this.cargarMisReservas({ silencioso: true });
       if (this.despuesDelLogin === 'resumen' && this.seleccion) this.abrirResumen();
       if (this.despuesDelLogin === 'mis-reservas') this.abrirMisReservas();
       this.despuesDelLogin = null;
     },
 
-    salir() {
-      // En Django: esto es el POST de logout
-      Store.logout('jugador');
+    async salir() {
+      try {
+        // En Django: esto es el POST de logout
+        await Store.logout('jugador');
+      } catch (error) {
+        console.error('jugador: no se pudo cerrar sesión', error);
+        this.avisar('No pudimos cerrar sesión. Probá de nuevo.');
+        return;
+      }
       this.usuario = null;
       this.misReservas = [];
       this.paso = null;
@@ -334,14 +413,15 @@ function jugador() {
     },
 
     // Mercado Pago simulado: un spinner de 2 segundos y después se guarda la reserva con la seña pagada
-    pagar() {
+    async pagar() {
       if (this.pagando) return;
       this.pagando = true;
-      setTimeout(() => {
-        const p = this.pedido;
-        this.seleccion = null;
+      await new Promise((listo) => setTimeout(listo, 2000));
+      const p = this.pedido;
+      let resultado;
+      try {
         // En Django: esto es el POST de la vista de reservas, cuando Mercado Pago confirma el pago
-        const resultado = Store.reservar({
+        resultado = await Store.reservar({
           canchaId: p.canchaId,
           fecha: p.fecha,
           hora: p.hora,
@@ -351,17 +431,24 @@ function jugador() {
           origen: 'web',
           medioSena: 'mercadopago',
         });
+      } catch (error) {
+        // Falló la conexión: no sabemos si se guardó. Se queda en el pago para que pruebe de nuevo.
+        console.error('jugador: no se pudo guardar la reserva', error);
         this.pagando = false;
-        if (!resultado.ok) {
-          this.paso = null;
-          this.actualizar();
-          this.avisar('¡Uy! Alguien reservó ese horario mientras pagabas. Tranqui, no se te cobró nada: elegí otro turno.', 6000);
-          this.$nextTick(() => this.$refs.grilla.scrollIntoView({ behavior: 'smooth', block: 'start' }));
-          return;
-        }
-        this.reserva = resultado.reserva;
-        this.paso = 'confirmada';
-      }, 2000);
+        this.avisar('No pudimos confirmar la reserva. Revisá tu conexión y probá de nuevo.', 6000);
+        return;
+      }
+      this.pagando = false;
+      this.seleccion = null;
+      if (!resultado.ok) {
+        this.paso = null;
+        this.actualizar();
+        this.avisar('¡Uy! Alguien reservó ese horario mientras pagabas. Tranqui, no se te cobró nada: elegí otro turno.', 6000);
+        this.$nextTick(() => this.$refs.grilla.scrollIntoView({ behavior: 'smooth', block: 'start' }));
+        return;
+      }
+      this.reserva = resultado.reserva;
+      this.paso = 'confirmada';
     },
 
     volverATurnos() {

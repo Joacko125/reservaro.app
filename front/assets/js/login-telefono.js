@@ -3,6 +3,9 @@
 // data-modo: 'hoja' (por defecto, se puede cerrar) o 'pagina' (tarjeta fija, abierta mientras no haya sesión).
 // Se abre con el evento 'pedir-login' { ambito } y al terminar dispara 'sesion-iniciada' { ambito, usuario }.
 // Si ya hay sesión en ese ámbito, no se abre: avisa 'sesion-iniciada' directamente.
+// Todo lo que pide al Store es async: mientras espera muestra 'Enviando…' / 'Verificando…' / 'Entrando…'.
+const LARGO_CODIGO = 6;
+
 function loginTelefono() {
   return {
     ambito: 'jugador',
@@ -12,7 +15,7 @@ function loginTelefono() {
     paso: 'telefono',      // 'telefono' | 'codigo' | 'nombre' | 'listo'
     telefonoTexto: '',     // lo que escribe, formateado: '11 2345-6789'
     telefono: null,        // normalizado: '1123456789'
-    digitos: ['', '', '', ''],
+    digitos: Array(LARGO_CODIGO).fill(''),
     nombre: '',
     usuario: null,
     error: '',
@@ -20,13 +23,24 @@ function loginTelefono() {
     notificacion: false,   // la notificación que imita a WhatsApp
     codigoEnviado: '',
     temporizadorNotificacion: null,
+    enviando: false,       // pidiendo el código
+    verificando: false,    // chequeando el código
+    entrando: false,       // guardando la sesión
+    esperaReenvio: 0,      // segundos que faltan para poder pedir otro código
+    temporizadorReenvio: null,
 
-    init() {
+    async init() {
       this.ambito = this.$el.dataset.ambito || 'jugador';
       this.modo = this.$el.dataset.modo === 'pagina' ? 'pagina' : 'hoja';
-      // En Django: el complejo viene del contexto de la vista
-      this.complejo = Store.complejo();
-      if (this.modo === 'pagina' && !Store.usuarioActual(this.ambito)) this.abrir();
+      try {
+        // En Django: el complejo viene del contexto de la vista
+        this.complejo = await Store.complejo();
+        if (this.modo === 'pagina' && !(await Store.usuarioActual(this.ambito))) this.abrir();
+      } catch (error) {
+        console.error('login-telefono: no se pudo cargar', error);
+        // En modo página igual mostramos la tarjeta: el error aparece cuando intente entrar
+        if (this.modo === 'pagina') this.abrir();
+      }
     },
 
     // En modo página no se cierra; en los dos, no se cierra mientras dice "¡Listo!"
@@ -34,13 +48,16 @@ function loginTelefono() {
       return this.modo !== 'pagina' && this.paso !== 'listo';
     },
 
-    abrir(detalle = {}) {
+    async abrir(detalle = {}) {
       if (detalle.ambito && detalle.ambito !== this.ambito) return;
-      const usuario = Store.usuarioActual(this.ambito);
+      let usuario = null;
+      try {
+        usuario = await Store.usuarioActual(this.ambito);
+      } catch (error) { /* si no se pudo leer la sesión, que entre de nuevo */ }
       if (usuario) return this.avisarSesion(usuario);
       this.paso = 'telefono';
       this.error = '';
-      this.digitos = ['', '', '', ''];
+      this.digitos = Array(LARGO_CODIGO).fill('');
       this.nombre = '';
       this.abierta = true;
       this.$nextTick(() => this.$refs.telefono.focus());
@@ -69,22 +86,34 @@ function loginTelefono() {
       return Store.normalizarTelefono(this.telefonoTexto) !== null;
     },
 
-    enviarCodigo() {
+    async enviarCodigo() {
+      if (this.enviando) return;
       const telefono = Store.normalizarTelefono(this.telefonoTexto);
       if (!telefono) {
         this.error = 'Revisá el número: son 10 dígitos con el código de área, sin 0 ni 15.';
         return;
       }
-      if (this.ambito === 'panel' && !Store.esDuenio(telefono)) {
-        this.error = `Ese celular no es el del dueño de ${this.complejo.nombre}.`;
+      this.enviando = true;
+      this.error = '';
+      try {
+        if (this.ambito === 'panel' && !(await Store.esDuenio(telefono))) {
+          this.error = `Ese celular no es el del dueño de ${this.complejo.nombre}.`;
+          return;
+        }
+        // En Django: acá el servidor manda el código por WhatsApp y no lo devuelve nunca
+        this.codigoEnviado = await Store.enviarCodigo(telefono);
+      } catch (error) {
+        console.error('login-telefono: no se pudo enviar el código', error);
+        this.error = 'No pudimos mandarte el código. Revisá tu conexión y probá de nuevo.';
         return;
+      } finally {
+        this.enviando = false;
       }
       this.telefono = telefono;
-      // En Django: acá el servidor manda el código por WhatsApp y no lo devuelve nunca
-      this.codigoEnviado = Store.enviarCodigo(telefono);
       this.paso = 'codigo';
-      this.digitos = ['', '', '', ''];
+      this.digitos = Array(LARGO_CODIGO).fill('');
       this.error = '';
+      this.arrancarEsperaReenvio();
       this.$nextTick(() => this.enfocarDigito(0));
       // Un ratito de espera, como si llegara el mensaje
       this.notificacion = false;
@@ -93,6 +122,21 @@ function loginTelefono() {
         this.notificacion = true;
         this.temporizadorNotificacion = setTimeout(() => { this.notificacion = false; }, 9000);
       }, 900);
+    },
+
+    // "Reenviar" queda bloqueado 60 segundos después de cada envío
+    arrancarEsperaReenvio() {
+      clearInterval(this.temporizadorReenvio);
+      this.esperaReenvio = 60;
+      this.temporizadorReenvio = setInterval(() => {
+        this.esperaReenvio -= 1;
+        if (this.esperaReenvio <= 0) clearInterval(this.temporizadorReenvio);
+      }, 1000);
+    },
+
+    reenviar() {
+      if (this.esperaReenvio > 0 || this.enviando) return;
+      this.enviarCodigo();
     },
 
     get telefonoMostrado() {
@@ -140,9 +184,9 @@ function loginTelefono() {
       if (numeros) this.repartir(numeros, 0);
     },
 
-    // Reparte los números desde una casilla, salta a la siguiente vacía y verifica al completar las 4
+    // Reparte los números desde una casilla, salta a la siguiente vacía y verifica al completar las 6
     repartir(numeros, desde) {
-      numeros.slice(0, 4 - desde).split('').forEach((numero, i) => { this.digitos[desde + i] = numero; });
+      numeros.slice(0, LARGO_CODIGO - desde).split('').forEach((numero, i) => { this.digitos[desde + i] = numero; });
       this.error = '';
       const vacia = this.digitos.findIndex((digito) => !digito);
       if (vacia === -1) {
@@ -150,7 +194,7 @@ function loginTelefono() {
         this.verificar();
       } else {
         const siguiente = desde + numeros.length;
-        this.enfocarDigito(siguiente <= 3 ? siguiente : vacia);
+        this.enfocarDigito(siguiente < LARGO_CODIGO ? siguiente : vacia);
       }
     },
 
@@ -160,19 +204,33 @@ function loginTelefono() {
       if (this.paso === 'codigo') this.repartir(this.codigoEnviado, 0);
     },
 
-    verificar() {
+    async verificar() {
       const codigo = this.digitos.join('');
-      if (codigo.length < 4) return;
-      if (!Store.verificarCodigo(this.telefono, codigo)) {
+      if (codigo.length < LARGO_CODIGO || this.verificando) return;
+      this.verificando = true;
+      let correcto = false;
+      let conocido = '';
+      try {
+        correcto = await Store.verificarCodigo(this.telefono, codigo);
+        if (correcto) conocido = await this.nombreConocido();
+      } catch (error) {
+        console.error('login-telefono: no se pudo verificar', error);
+        this.error = 'No pudimos verificar el código. Probá de nuevo.';
+        this.verificando = false;
+        return;
+      }
+      this.verificando = false;
+      if (!correcto) {
         this.error = 'El código no es correcto. Probá de nuevo.';
         this.temblar = true;
         setTimeout(() => { this.temblar = false; }, 450);
-        this.digitos = ['', '', '', ''];
+        this.digitos = Array(LARGO_CODIGO).fill('');
         this.$nextTick(() => this.enfocarDigito(0));
         return;
       }
       this.notificacion = false;
-      const conocido = this.nombreConocido();
+      clearInterval(this.temporizadorReenvio);
+      this.esperaReenvio = 0;
       if (conocido) return this.entrar(conocido);
       this.paso = 'nombre';
       this.$nextTick(() => this.$refs.nombre.focus());
@@ -180,11 +238,11 @@ function loginTelefono() {
 
     // Si ya reservó o ya entró en el otro ámbito, no le volvemos a pedir el nombre.
     // En Django: esto lo resuelve la vista buscando el usuario por teléfono
-    nombreConocido() {
-      const sesiones = ['jugador', 'panel'].map((ambito) => Store.usuarioActual(ambito));
+    async nombreConocido() {
+      const sesiones = await Promise.all(['jugador', 'panel'].map((ambito) => Store.usuarioActual(ambito)));
       const sesion = sesiones.find((usuario) => usuario && usuario.telefono === this.telefono && usuario.nombre);
       if (sesion) return sesion.nombre;
-      const reserva = Store.reservasDeUsuario(this.telefono)[0];
+      const reserva = (await Store.reservasDeUsuario(this.telefono))[0];
       return reserva ? reserva.nombre : '';
     },
 
@@ -201,9 +259,21 @@ function loginTelefono() {
 
     // ---------- Final ----------
 
-    entrar(nombre) {
-      // En Django: esto es el POST de la vista de login, que deja la sesión abierta
-      this.usuario = Store.login(this.telefono, nombre, this.ambito);
+    async entrar(nombre) {
+      if (this.entrando) return;
+      this.entrando = true;
+      try {
+        // En Django: esto es el POST de la vista de login, que deja la sesión abierta
+        this.usuario = await Store.login(this.telefono, nombre, this.ambito);
+      } catch (error) {
+        console.error('login-telefono: no se pudo iniciar sesión', error);
+        this.error = 'No pudimos terminar de entrar. Probá de nuevo.';
+        this.entrando = false;
+        if (this.paso !== 'nombre') this.paso = 'nombre';
+        this.nombre = this.nombre || nombre;
+        return;
+      }
+      this.entrando = false;
       this.error = '';
       this.paso = 'listo';
       setTimeout(() => {

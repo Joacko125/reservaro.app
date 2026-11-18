@@ -81,9 +81,12 @@
           Demo: el celular del dueño es <span class="font-semibold" x-text="Fmt.telefono(complejo.telefonoDuenio)"></span>
         </p>
 
-        <button type="submit" :disabled="!telefonoValido"
+        <button type="submit" :disabled="!telefonoValido || enviando" :aria-busy="enviando"
                 class="mt-4 flex h-14 w-full items-center justify-center gap-2 rounded-2xl bg-marca font-semibold text-marca-oscuro transition hover:brightness-105 active:scale-[0.98] disabled:opacity-40 disabled:active:scale-100">
-          Recibir código <i data-lucide="arrow-right" class="h-5 w-5"></i>
+          <span x-show="!enviando" class="inline-flex items-center gap-2">Recibir código <i data-lucide="arrow-right" class="h-5 w-5"></i></span>
+          <span x-cloak x-show="enviando" class="inline-flex items-center gap-2">
+            <span class="h-5 w-5 animate-spin rounded-full border-2 border-marca-oscuro/30 border-t-marca-oscuro"></span>Enviando…
+          </span>
         </button>
         <p class="mt-3 text-center text-xs text-marca-claro/40">Demo: el código llega simulado acá mismo.</p>
       </form>
@@ -98,9 +101,9 @@
           Te lo mandamos por WhatsApp al <strong class="whitespace-nowrap text-marca-claro" x-text="telefonoMostrado"></strong>.
         </p>
 
-        <div class="mt-6 flex justify-center gap-3" :class="temblar && 'animate-[login-temblar_0.4s_ease-in-out]'">
+        <div class="mt-6 flex justify-center gap-2" :class="temblar && 'animate-[login-temblar_0.4s_ease-in-out]'">
           <template x-for="(digito, indice) in digitos" :key="indice">
-            <input data-digito type="text" inputmode="numeric" maxlength="4" pattern="[0-9]*"
+            <input data-digito type="text" inputmode="numeric" maxlength="6" pattern="[0-9]*"
                    :autocomplete="indice === 0 ? 'one-time-code' : 'off'"
                    :aria-label="'Dígito ' + (indice + 1) + ' del código'"
                    :value="digito"
@@ -108,15 +111,20 @@
                    @keydown.backspace="alBorrar(indice, $event)"
                    @paste.prevent="alPegar($event)"
                    @focus="$event.target.select()"
-                   class="h-16 w-14 rounded-2xl bg-marca-claro/5 text-center font-titulo text-3xl font-extrabold outline-none ring-1 ring-inset transition focus:ring-2 focus:ring-marca"
+                   :disabled="verificando"
+                   class="h-14 w-11 rounded-xl bg-marca-claro/5 text-center font-titulo text-3xl font-extrabold outline-none ring-1 ring-inset transition focus:ring-2 focus:ring-marca"
                    :class="error ? 'ring-alerta/70' : (digito ? 'ring-marca/60' : 'ring-marca-claro/15')">
           </template>
         </div>
-        <p class="mt-3 min-h-[1.25rem] text-center text-sm text-alerta" x-text="error"></p>
+        <p class="mt-3 min-h-[1.25rem] text-center text-sm" :class="error ? 'text-alerta' : 'text-marca-claro/60'"
+           x-text="error || (verificando ? 'Verificando…' : '')"></p>
 
         <div class="mt-2 flex justify-between gap-3 text-sm font-semibold">
           <button type="button" @click="cambiarNumero()" class="h-11 rounded-xl px-2 text-marca-claro/60 transition hover:text-marca-claro">Cambiar número</button>
-          <button type="button" @click="enviarCodigo()" class="h-11 rounded-xl px-2 text-marca transition hover:brightness-110">Reenviar código</button>
+          <!-- Reenviar: espera 60 s entre envíos (en Django el servidor también lo controla) -->
+          <button type="button" @click="reenviar()" :disabled="esperaReenvio > 0 || enviando"
+                  class="h-11 rounded-xl px-2 tabular-nums text-marca transition hover:brightness-110 disabled:text-marca-claro/40"
+                  x-text="enviando ? 'Enviando…' : (esperaReenvio > 0 ? 'Reenviar en ' + esperaReenvio + ' s' : 'Reenviar código')"></button>
         </div>
       </form>
 
@@ -136,9 +144,9 @@
         </label>
         <p class="mt-2 min-h-[1.25rem] text-sm text-alerta" x-text="error"></p>
 
-        <button type="submit"
-                class="mt-2 flex h-14 w-full items-center justify-center gap-2 rounded-2xl bg-marca font-semibold text-marca-oscuro transition hover:brightness-105 active:scale-[0.98]">
-          Entrar <i data-lucide="arrow-right" class="h-5 w-5"></i>
+        <button type="submit" :disabled="entrando"
+                class="mt-2 flex h-14 w-full items-center justify-center gap-2 rounded-2xl bg-marca font-semibold text-marca-oscuro transition hover:brightness-105 active:scale-[0.98] disabled:opacity-60">
+          <span x-text="entrando ? 'Entrando…' : 'Entrar'"></span> <i data-lucide="arrow-right" class="h-5 w-5"></i>
         </button>
       </form>
 

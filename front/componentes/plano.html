@@ -10,7 +10,7 @@
     <span x-show="hora !== null" class="shrink-0 rounded-full bg-marca/15 px-3 py-1 text-sm font-semibold text-marca" x-text="hora !== null ? Fmt.hora(hora) : ''"></span>
   </div>
 
-  <svg viewBox="0 0 136 100" class="mt-2 h-auto w-full select-none" role="group" aria-label="Plano del predio con la cancha F5 y la cancha F8">
+  <svg viewBox="0 0 136 100" class="mt-2 h-auto w-full select-none transition-opacity duration-300" :class="estado === 'cargando' && 'animate-pulse opacity-50'" role="group" aria-label="Plano del predio con la cancha F5 y la cancha F8">
     <g transform="matrix(0.866 0.5 -0.866 0.5 42 20)">
       <!-- Piso del predio -->
       <rect x="0" y="0" width="104" height="44" rx="2" stroke-width="0.4" class="fill-marca-claro/5 stroke-marca-claro/15"/>
@@ -21,16 +21,16 @@
          @click="tocar('f5')" @keydown.enter.prevent="tocar('f5')" @keydown.space.prevent="tocar('f5')">
         <rect x="4.5" y="8.5" width="39" height="27" rx="2" fill="none" stroke-width="1.2"
               class="stroke-libre transition-opacity duration-500"
-              :class="estado('f5') === 'libre' ? 'opacity-100 motion-safe:animate-pulse' : 'opacity-0'"/>
+              :class="estadoDe('f5') === 'libre' ? 'opacity-100 motion-safe:animate-pulse' : 'opacity-0'"/>
         <rect x="6" y="10" width="36" height="24" rx="1" class="transition-colors duration-500"
-              :class="{ 'fill-libre': estado('f5') === 'libre', 'fill-slate-400': estado('f5') === 'ocupada', 'fill-libre/40': estado('f5') === 'neutro' }"/>
+              :class="{ 'fill-libre': estadoDe('f5') === 'libre', 'fill-slate-400': estadoDe('f5') === 'ocupada', 'fill-libre/40': estadoDe('f5') === 'neutro' }"/>
         <g class="fill-marca-oscuro/10">
           <rect x="12" y="10" width="6" height="24"/>
           <rect x="24" y="10" width="6" height="24"/>
           <rect x="36" y="10" width="6" height="24"/>
         </g>
         <g fill="none" stroke-width="0.5" class="stroke-marca-claro transition-opacity duration-500"
-           :class="estado('f5') === 'ocupada' ? 'opacity-50' : 'opacity-90'">
+           :class="estadoDe('f5') === 'ocupada' ? 'opacity-50' : 'opacity-90'">
           <rect x="7.5" y="11.5" width="33" height="21"/>
           <line x1="24" y1="11.5" x2="24" y2="32.5"/>
           <circle cx="24" cy="22" r="3.5"/>
@@ -55,16 +55,16 @@
          @click="tocar('f8')" @keydown.enter.prevent="tocar('f8')" @keydown.space.prevent="tocar('f8')">
         <rect x="48.5" y="2.5" width="51" height="39" rx="2" fill="none" stroke-width="1.2"
               class="stroke-libre transition-opacity duration-500"
-              :class="estado('f8') === 'libre' ? 'opacity-100 motion-safe:animate-pulse' : 'opacity-0'"/>
+              :class="estadoDe('f8') === 'libre' ? 'opacity-100 motion-safe:animate-pulse' : 'opacity-0'"/>
         <rect x="50" y="4" width="48" height="36" rx="1" class="transition-colors duration-500"
-              :class="{ 'fill-libre': estado('f8') === 'libre', 'fill-slate-400': estado('f8') === 'ocupada', 'fill-libre/40': estado('f8') === 'neutro' }"/>
+              :class="{ 'fill-libre': estadoDe('f8') === 'libre', 'fill-slate-400': estadoDe('f8') === 'ocupada', 'fill-libre/40': estadoDe('f8') === 'neutro' }"/>
         <g class="fill-marca-oscuro/10">
           <rect x="58" y="4" width="8" height="36"/>
           <rect x="74" y="4" width="8" height="36"/>
           <rect x="90" y="4" width="8" height="36"/>
         </g>
         <g fill="none" stroke-width="0.5" class="stroke-marca-claro transition-opacity duration-500"
-           :class="estado('f8') === 'ocupada' ? 'opacity-50' : 'opacity-90'">
+           :class="estadoDe('f8') === 'ocupada' ? 'opacity-50' : 'opacity-90'">
           <rect x="51.5" y="5.5" width="45" height="33"/>
           <line x1="74" y1="5.5" x2="74" y2="38.5"/>
           <circle cx="74" cy="22" r="5"/>
@@ -118,4 +118,9 @@
     <li class="flex items-center gap-2"><span class="h-3 w-3 rounded-sm ring-2 ring-marca"></span>Elegida</li>
   </ul>
   <p class="mt-2 min-h-[1.25rem] text-sm font-medium text-alerta" aria-live="polite" x-text="aviso"></p>
+  <!-- Error: no se pudieron traer las canchas o los turnos -->
+  <button type="button" x-cloak x-show="estado === 'error'" @click="reintentar()"
+          class="mt-1 inline-flex h-11 items-center gap-2 rounded-xl bg-marca-claro/10 px-4 text-sm font-semibold transition hover:bg-marca-claro/15">
+    <i data-lucide="rotate-cw" class="h-4 w-4"></i>Reintentar
+  </button>
 </section>
