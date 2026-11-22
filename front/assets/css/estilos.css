@@ -28,3 +28,16 @@ html {
   font-size: 0.875rem;
   text-align: center;
 }
+
+/* ---------- Promo del dueño: el turno brilla ----------
+   Lo usan la grilla del jugador y la agenda del panel. Lima = color de Reservaro (rgb 198 244 50). */
+.turno-promo {
+  box-shadow: 0 0 0 2px rgb(198 244 50);
+  animation: brillo-promo 1.6s ease-in-out infinite;
+}
+@keyframes brillo-promo {
+  50% { box-shadow: 0 0 0 2px rgb(198 244 50), 0 0 18px 4px rgb(198 244 50 / 0.55); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .turno-promo { animation: none; }
+}

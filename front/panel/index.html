@@ -212,11 +212,13 @@
               · Efectivo <span class="font-semibold" x-text="Fmt.pesos(resumen.senasEfectivo)"></span>
               <span x-show="resumen.senasMP">· Mercado Pago <span class="font-semibold" x-text="Fmt.pesos(resumen.senasMP)"></span></span>
             </p>
-            <!-- Reservas web esperando el comprobante: el dueño las marca en el detalle -->
-            <p x-show="resumen.pendientes" class="mt-2 inline-flex items-center gap-1.5 rounded-full bg-white/15 px-2.5 py-1 text-xs font-semibold">
-              <span class="h-1.5 w-1.5 rounded-full bg-fijo"></span>
-              <span x-text="resumen.pendientes === 1 ? '1 seña esperando comprobante' : resumen.pendientes + ' señas esperando comprobante'"></span>
-            </p>
+            <!-- Reservas web de cualquier día esperando el comprobante: abre la lista de señas pendientes -->
+            <button type="button" x-show="pendientes.length" @click="abrirSenas()"
+                    class="mt-2 inline-flex min-h-[2.25rem] items-center gap-1.5 rounded-full bg-white/15 px-3 py-1 text-xs font-semibold transition hover:bg-white/25 active:scale-95">
+              <span class="h-2 w-2 animate-pulse rounded-full bg-fijo"></span>
+              <span x-text="pendientes.length === 1 ? '1 seña pendiente' : pendientes.length + ' señas pendientes'"></span>
+              <i data-lucide="chevron-right" class="h-3.5 w-3.5"></i>
+            </button>
           </article>
         </div>
       </div>
@@ -333,13 +335,19 @@
                   <!-- Hueco libre: al tocarlo se abre la reserva manual -->
                   <template x-if="b.tipo === 'libre'">
                     <button type="button" @click="abrirManual(col, i)" :disabled="b.pasado"
-                            :aria-label="'Reservar ' + col.cancha.nombre + ' a las ' + Fmt.hora(b.hora)"
-                            class="group flex h-full w-full flex-col items-center justify-center gap-0.5 rounded-2xl border border-dashed border-marca-oscuro/15 text-xs text-marca-oscuro/40 transition enabled:hover:border-solid enabled:hover:border-club enabled:hover:bg-club/5 enabled:active:scale-[0.98] disabled:cursor-default disabled:opacity-40">
-                      <span class="flex items-center gap-1.5 font-medium group-enabled:group-hover:hidden">
+                            :aria-label="(b.promo ? 'En promo: ' : 'Reservar ') + col.cancha.nombre + ' a las ' + Fmt.hora(b.hora)"
+                            class="group flex h-full w-full flex-col items-center justify-center gap-0.5 rounded-2xl border border-dashed border-marca-oscuro/15 text-xs text-marca-oscuro/40 transition enabled:hover:border-solid enabled:hover:border-club enabled:hover:bg-club/5 enabled:active:scale-[0.98] disabled:cursor-default disabled:opacity-40"
+                            :class="b.promo && !b.pasado && 'turno-promo border-solid border-transparent bg-marca/30 !text-marca-oscuro'">
+                      <span x-show="!b.promo" class="flex items-center gap-1.5 font-medium group-enabled:group-hover:hidden">
                         <span class="h-1.5 w-1.5 rounded-full bg-libre"></span>
                         Libre
                       </span>
-                      <span x-show="b.precio" class="hidden tabular-nums sm:block group-enabled:group-hover:hidden" x-text="Fmt.pesos(b.precio)"></span>
+                      <!-- Turno en promo: brilla igual que en la app del jugador -->
+                      <span x-show="b.promo" class="flex items-center gap-1 font-bold uppercase tracking-wider group-enabled:group-hover:hidden">
+                        <i data-lucide="sparkles" class="h-3.5 w-3.5"></i>Promo
+                      </span>
+                      <span x-show="b.promo" class="font-semibold tabular-nums group-enabled:group-hover:hidden" x-text="Fmt.pesos(b.precio)"></span>
+                      <span x-show="b.precio && !b.promo" class="hidden tabular-nums sm:block group-enabled:group-hover:hidden" x-text="Fmt.pesos(b.precio)"></span>
                       <span class="hidden items-center gap-1 font-semibold text-club group-enabled:group-hover:flex">
                         <i data-lucide="plus" class="h-4 w-4"></i>
                         Reservar
@@ -507,6 +515,12 @@
           <div class="min-w-0 flex-1">
             <p class="font-titulo text-base font-extrabold leading-snug" x-text="a.titulo"></p>
             <p class="mt-0.5 truncate text-xs text-white/60" x-text="a.texto"></p>
+            <!-- Acción opcional, por ejemplo "¿Lo ponés en promo?" cuando se libera un turno -->
+            <button type="button" x-show="a.accion" @click="hacerAccionAviso()"
+                    class="mt-2 inline-flex h-10 items-center gap-1.5 rounded-xl bg-marca px-3 text-sm font-bold text-marca-oscuro transition hover:brightness-105 active:scale-95">
+              <i data-lucide="sparkles" class="h-4 w-4"></i>
+              <span x-text="a.accion ? a.accion.texto : ''"></span>
+            </button>
           </div>
           <button type="button" @click="aviso = null" aria-label="Cerrar aviso"
                   class="grid h-11 w-11 shrink-0 place-items-center rounded-full text-white/50 transition hover:bg-white/10 hover:text-white">
@@ -514,7 +528,8 @@
           </button>
         </div>
         <div class="h-1 bg-white/10">
-          <div class="vaciar h-full" :class="{ nueva: 'bg-club', ok: 'bg-libre', cancelada: 'bg-fijo', error: 'bg-alerta' }[a.tipo]"></div>
+          <div class="vaciar h-full" :style="'animation-duration: ' + a.duracion + 'ms'"
+               :class="{ nueva: 'bg-club', ok: 'bg-libre', cancelada: 'bg-fijo', error: 'bg-alerta' }[a.tipo]"></div>
         </div>
       </div>
     </template>
@@ -589,6 +604,17 @@
         <p x-show="form.error" x-text="form.error"
            class="mt-4 rounded-xl bg-alerta/10 px-4 py-3 text-sm font-medium text-alerta"></p>
 
+        <!-- ¿Nadie lo reserva? Ponerlo en promo (pedido del dueño) -->
+        <button type="button" @click="abrirPromoDesdeManual()"
+                class="mt-4 flex w-full items-center gap-3 rounded-2xl bg-marca/25 p-4 text-left ring-1 ring-inset ring-marca transition hover:bg-marca/40">
+          <i data-lucide="sparkles" class="h-5 w-5 shrink-0"></i>
+          <span class="min-w-0 flex-1">
+            <span class="block text-sm font-semibold" x-text="form.promo ? 'Ya está en promo: cambiar precio o quitarla' : '¿Nadie lo reserva? Ponelo en promo'"></span>
+            <span class="block text-xs text-marca-oscuro/55">Solo este turno de 1 hora. En la app del jugador brilla.</span>
+          </span>
+          <i data-lucide="chevron-right" class="h-5 w-5 shrink-0 text-marca-oscuro/40"></i>
+        </button>
+
         <div class="mt-6 flex items-center justify-between gap-3 border-t border-marca-oscuro/5 pt-5">
           <div>
             <p class="text-xs text-marca-oscuro/55">Total del turno</p>
@@ -601,6 +627,128 @@
           </button>
         </div>
       </form>
+    </div>
+  </template>
+
+  <!-- Poner un turno en promo: precio editable -->
+  <template x-if="formPromo">
+    <div class="fixed inset-0 z-40 flex items-end justify-center sm:items-center sm:p-6" role="dialog" aria-modal="true" aria-labelledby="titulo-promo">
+      <div class="absolute inset-0 bg-marca-oscuro/60 backdrop-blur-sm" @click="formPromo = null"></div>
+
+      <form @submit.prevent="guardarPromo()"
+            class="hoja-sube relative max-h-[92vh] w-full overflow-y-auto rounded-t-[2rem] bg-white p-5 pb-[max(1.25rem,env(safe-area-inset-bottom))] shadow-2xl sm:max-w-md sm:rounded-[2rem] sm:p-7">
+        <div class="mx-auto mb-4 h-1.5 w-10 rounded-full bg-marca-oscuro/10 sm:hidden"></div>
+
+        <div class="flex items-start justify-between gap-3">
+          <div>
+            <p class="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-[0.2em] text-marca-oscuro/40">
+              <i data-lucide="sparkles" class="h-3.5 w-3.5"></i><span x-text="formPromo.promoId ? 'Turno en promo' : 'Poner en promo'"></span>
+            </p>
+            <h2 id="titulo-promo" class="mt-1 font-titulo text-2xl font-extrabold tracking-tight" x-text="formPromo.cancha.nombre"></h2>
+            <p class="mt-1 text-sm text-marca-oscuro/55 first-letter:uppercase"
+               x-text="Fmt.diaLargo(formPromo.fecha) + ' · ' + Fmt.rango(formPromo.hora)"></p>
+          </div>
+          <button type="button" @click="formPromo = null" aria-label="Cerrar"
+                  class="grid h-11 w-11 shrink-0 place-items-center rounded-full bg-marca-oscuro/5 transition hover:bg-marca-oscuro/10">
+            <i data-lucide="x" class="h-5 w-5"></i>
+          </button>
+        </div>
+
+        <label class="mt-5 block">
+          <span class="text-sm font-semibold">Precio de la promo</span>
+          <div class="mt-2 flex h-14 items-center rounded-xl bg-marca-oscuro/5 ring-2 ring-transparent transition focus-within:bg-white focus-within:ring-club">
+            <span class="shrink-0 pl-4 pr-1 text-xl font-semibold text-marca-oscuro/40">$</span>
+            <input type="text" inputmode="numeric" x-ref="precioPromo" x-model="formPromo.precio" @input="formPromo.error = ''"
+                   class="h-full w-full rounded-r-xl border-0 bg-transparent pr-4 font-titulo text-2xl font-extrabold tabular-nums outline-none">
+          </div>
+        </label>
+        <p class="mt-2 flex items-center justify-between text-sm text-marca-oscuro/55">
+          <span>Precio normal <span class="tabular-nums line-through" x-text="Fmt.pesos(formPromo.precioNormal)"></span></span>
+          <span x-show="descuentoPromo" class="rounded-full bg-marca/40 px-2 py-0.5 text-xs font-bold text-marca-oscuro" x-text="descuentoPromo"></span>
+        </p>
+        <p class="mt-3 rounded-2xl bg-marca-oscuro/5 p-3 text-xs text-marca-oscuro/60">
+          Es solo para este turno. En la app del jugador brilla con el precio nuevo, y la promo se termina cuando alguien lo reserva.
+        </p>
+
+        <p x-show="formPromo.error" x-text="formPromo.error"
+           class="mt-4 rounded-xl bg-alerta/10 px-4 py-3 text-sm font-medium text-alerta"></p>
+
+        <button type="submit" :disabled="formPromo.guardando"
+                class="mt-5 flex h-14 w-full items-center justify-center gap-2 rounded-2xl bg-marca font-bold text-marca-oscuro shadow-lg shadow-marca/30 transition hover:brightness-105 active:scale-[0.98] disabled:opacity-60">
+          <i data-lucide="sparkles" class="h-5 w-5"></i>
+          <span x-text="formPromo.promoId ? 'Cambiar precio' : 'Poner en promo'"></span>
+        </button>
+        <button type="button" x-show="formPromo.promoId" @click="quitarPromo()" :disabled="formPromo.guardando"
+                class="mt-2 h-12 w-full rounded-xl text-sm font-semibold text-alerta transition hover:bg-alerta/10">
+          Quitar la promo
+        </button>
+      </form>
+    </div>
+  </template>
+
+  <!-- Señas pendientes: reservas web que esperan el comprobante -->
+  <template x-if="senas">
+    <div class="fixed inset-0 z-40 flex items-end justify-center sm:items-center sm:p-6" role="dialog" aria-modal="true" aria-labelledby="titulo-senas">
+      <div class="absolute inset-0 bg-marca-oscuro/60 backdrop-blur-sm" @click="senas = null"></div>
+
+      <section class="hoja-sube relative max-h-[92vh] w-full overflow-y-auto rounded-t-[2rem] bg-white p-5 pb-[max(1.25rem,env(safe-area-inset-bottom))] shadow-2xl sm:max-w-lg sm:rounded-[2rem] sm:p-7">
+        <div class="mx-auto mb-4 h-1.5 w-10 rounded-full bg-marca-oscuro/10 sm:hidden"></div>
+        <div class="flex items-start justify-between gap-3">
+          <div>
+            <h2 id="titulo-senas" class="font-titulo text-2xl font-extrabold tracking-tight">Señas pendientes</h2>
+            <p class="mt-1 text-sm text-marca-oscuro/55"
+               x-text="'Si no llega el comprobante en ' + ((complejo.minutosParaSenar || {}).maximo || 30) + ' minutos, podés liberar el turno.'"></p>
+          </div>
+          <button type="button" @click="senas = null" aria-label="Cerrar"
+                  class="grid h-11 w-11 shrink-0 place-items-center rounded-full bg-marca-oscuro/5 transition hover:bg-marca-oscuro/10">
+            <i data-lucide="x" class="h-5 w-5"></i>
+          </button>
+        </div>
+
+        <div x-show="senas.estado === 'cargando'" class="mt-5 animate-pulse space-y-2" aria-busy="true">
+          <div class="h-28 rounded-2xl bg-marca-oscuro/5"></div>
+          <div class="h-28 rounded-2xl bg-marca-oscuro/5"></div>
+        </div>
+        <div x-show="senas.estado === 'error'" class="mt-5 flex flex-col items-center rounded-2xl bg-marca-oscuro/5 p-6 text-center">
+          <p class="font-semibold">No pudimos traer las señas pendientes.</p>
+          <button type="button" @click="abrirSenas()"
+                  class="mt-3 inline-flex h-11 items-center gap-2 rounded-xl bg-marca-oscuro px-4 text-sm font-semibold text-white">Reintentar</button>
+        </div>
+        <p x-show="senas.estado === 'listo' && !senas.lista.length"
+           class="mt-5 rounded-2xl bg-libre/10 p-4 text-center text-sm text-marca-oscuro/70">No hay señas pendientes. ¡Todo cobrado!</p>
+
+        <ul x-show="senas.estado === 'listo'" class="mt-5 space-y-3">
+          <template x-for="r in senas.lista" :key="r.id">
+            <li class="rounded-2xl p-4 ring-1 ring-inset"
+                :class="esperaSena(r).nivel === 'vencida' ? 'bg-alerta/5 ring-alerta/30' : 'bg-marca-oscuro/[0.03] ring-marca-oscuro/10'">
+              <div class="flex items-start justify-between gap-3">
+                <div class="min-w-0">
+                  <p class="truncate font-semibold" x-text="r.nombre"></p>
+                  <p class="text-sm text-marca-oscuro/55 first-letter:uppercase" x-text="textoTurno(r)"></p>
+                  <a :href="'https://wa.me/549' + r.telefono" target="_blank" rel="noopener"
+                     class="text-xs font-semibold text-club underline-offset-2 hover:underline" x-text="'WhatsApp ' + Fmt.telefono(r.telefono)"></a>
+                </div>
+                <div class="shrink-0 text-right">
+                  <p class="font-titulo text-lg font-extrabold tabular-nums" x-text="Fmt.pesos(r.sena)"></p>
+                  <p class="text-xs font-semibold"
+                     :class="{ ok: 'text-marca-oscuro/50', aviso: 'text-fijo', vencida: 'text-alerta' }[esperaSena(r).nivel]"
+                     x-text="esperaSena(r).texto"></p>
+                </div>
+              </div>
+              <div class="mt-3 grid grid-cols-3 gap-2">
+                <button type="button" @click="senaRecibidaDesdeLista(r, 'transferencia')"
+                        class="h-11 rounded-xl bg-club text-xs font-semibold text-white transition hover:brightness-110 active:scale-95">Transferencia</button>
+                <button type="button" @click="senaRecibidaDesdeLista(r, 'efectivo')"
+                        class="h-11 rounded-xl bg-marca-oscuro/5 text-xs font-semibold transition hover:bg-marca-oscuro/10 active:scale-95">Efectivo</button>
+                <button type="button" @click="liberar(r)"
+                        class="h-11 rounded-xl text-xs font-semibold transition active:scale-95"
+                        :class="senas.liberando === r.id ? 'bg-alerta text-white' : 'text-alerta ring-1 ring-inset ring-alerta/40 hover:bg-alerta/10'"
+                        x-text="senas.liberando === r.id ? '¿Seguro? Liberar' : 'Liberar'"></button>
+              </div>
+            </li>
+          </template>
+        </ul>
+      </section>
     </div>
   </template>
 

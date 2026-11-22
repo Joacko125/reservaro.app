@@ -152,10 +152,13 @@
       <div class="-mx-4 mt-3 flex snap-x gap-2 overflow-x-auto px-4 pb-2 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
         <template x-for="(dia, indice) in dias" :key="dia">
           <button type="button" @click="elegirDia(dia)" :aria-pressed="dia === fecha"
-                  class="flex w-[4.75rem] shrink-0 snap-start flex-col items-center rounded-2xl py-3 transition duration-300 active:scale-95"
+                  class="relative flex w-[4.75rem] shrink-0 snap-start flex-col items-center rounded-2xl py-3 transition duration-300 active:scale-95"
                   :class="dia === fecha
                     ? 'bg-marca text-marca-oscuro shadow-lg shadow-marca/20'
                     : 'bg-marca-claro/5 ring-1 ring-inset ring-marca-claro/10 hover:bg-marca-claro/10'">
+            <!-- Puntito lima: ese día hay algún turno en promo del dueño -->
+            <span x-show="diasConPromo[dia]" class="absolute right-2 top-2 h-2.5 w-2.5 rounded-full bg-marca ring-2 ring-marca-oscuro"
+                  :aria-label="'Hay promos este día'"></span>
             <span class="text-[0.7rem] font-semibold uppercase tracking-wider" x-text="nombreDia(dia, indice)"></span>
             <span class="font-titulo text-3xl font-extrabold leading-none" x-text="numeroDia(dia)"></span>
             <span class="mt-1 text-[0.65rem] font-medium"
@@ -183,6 +186,9 @@
       <ul class="mt-3 flex flex-wrap gap-x-4 gap-y-2 text-xs text-marca-claro/80">
         <li class="flex items-center gap-2"><span class="h-3 w-3 rounded-sm bg-libre"></span>Libre</li>
         <li class="flex items-center gap-2"><span class="h-3 w-3 rounded-sm bg-marca"></span>Elegido</li>
+        <li x-show="Object.values(diasConPromo).some(Boolean)" class="flex items-center gap-2">
+          <span class="h-3 w-3 rounded-sm bg-libre/15 ring-2 ring-marca"></span>Promo
+        </li>
         <li class="flex items-center gap-2"><span class="h-3 w-3 rounded-sm bg-marca-claro/20"></span>Reservado</li>
         <li class="flex items-center gap-2"><span class="h-3 w-3 rounded-sm border-2 border-dashed border-fijo"></span>Fijo</li>
       </ul>
@@ -242,16 +248,22 @@
                       :aria-label="nombreCancha(turno.canchaId) + ', ' + Fmt.rango(turno.hora) + ': ' + textoCelda(turno)"
                       class="flex h-16 flex-col justify-center rounded-2xl px-3 text-left transition duration-300 active:scale-[0.97]"
                       :class="{
-                        'bg-libre/15 ring-1 ring-inset ring-libre/40 hover:bg-libre/25': estadoCelda(turno) === 'libre',
+                        'bg-libre/15 ring-1 ring-inset ring-libre/40 hover:bg-libre/25': estadoCelda(turno) === 'libre' && !esPromoDelDuenio(turno),
+                        'turno-promo bg-marca/10 hover:bg-marca/20': estadoCelda(turno) === 'libre' && esPromoDelDuenio(turno),
                         'scale-[1.02] bg-marca text-marca-oscuro shadow-lg shadow-marca/25': estadoCelda(turno) === 'elegido',
                         'bg-marca-claro/[0.06] text-marca-claro/35': estadoCelda(turno) === 'reservado',
                         'border-2 border-dashed border-fijo/70 bg-fijo/10 text-fijo': estadoCelda(turno) === 'fijo',
                         'text-marca-claro/25 ring-1 ring-inset ring-marca-claro/5': estadoCelda(turno) === 'pasado',
                         'opacity-30 saturate-50': atenuada(turno.canchaId),
                       }">
-                <span class="text-[0.7rem] font-semibold uppercase tracking-wider"
-                      :class="estadoCelda(turno) === 'libre' && 'text-libre'"
-                      x-text="textoCelda(turno)"></span>
+                <span class="flex items-baseline justify-between gap-1">
+                  <span class="text-[0.7rem] font-semibold uppercase tracking-wider"
+                        :class="estadoCelda(turno) === 'libre' && (esPromoDelDuenio(turno) ? 'text-marca' : 'text-libre')"
+                        x-text="textoCelda(turno)"></span>
+                  <!-- Precio normal tachado cuando hay promo (del dueño o de horario) -->
+                  <span x-show="tienePrecioPromo(turno) && (estadoCelda(turno) === 'libre' || estadoCelda(turno) === 'elegido')"
+                        class="text-[0.7rem] tabular-nums line-through opacity-60" x-text="Fmt.pesos(turno.precioNormal)"></span>
+                </span>
                 <span x-show="estadoCelda(turno) === 'libre' || estadoCelda(turno) === 'elegido'"
                       class="font-titulo text-xl font-bold leading-tight" x-text="Fmt.pesos(turno.precio)"></span>
               </button>
@@ -352,7 +364,10 @@
       <dl class="mt-3 space-y-2 rounded-3xl bg-marca-claro/5 p-4 text-sm ring-1 ring-inset ring-marca-claro/10">
         <div class="flex items-baseline justify-between gap-3">
           <dt class="text-marca-claro/70">Total del turno</dt>
-          <dd class="font-semibold" x-text="pedido?.total"></dd>
+          <dd class="font-semibold">
+            <span x-show="pedido?.totalNormal" class="mr-1 text-xs font-normal text-marca-claro/45 line-through" x-text="pedido?.totalNormal"></span>
+            <span x-text="pedido?.total"></span>
+          </dd>
         </div>
         <div class="flex items-baseline justify-between gap-3">
           <dt class="text-marca-claro/70">Seña ahora <span class="text-xs text-marca-claro/45" x-text="'(' + pedido?.senaPorHora + ' por hora)'"></span></dt>

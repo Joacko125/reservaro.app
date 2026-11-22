@@ -50,6 +50,10 @@ function panel() {
     resaltadaHoy: false,
     aviso: null,
     form: null,
+    formPromo: null,     // { cancha, fecha, hora, precio, precioNormal, promoId, error, guardando }
+    senas: null,         // hoja de señas pendientes: { estado, lista, liberando: id | null }
+    pendientes: [],      // señas pendientes de todos los días (para el contador del resumen)
+    ahoraMs: Date.now(), // para "hace 12 min": se actualiza cada minuto
     logoOk: false,
     toque: null,
     _timerAviso: null,
@@ -147,6 +151,8 @@ function panel() {
     cerrarModales() {
       this.form = null;
       this.formFijo = null;
+      this.formPromo = null;
+      this.senas = null;
       this.detalle = null;
       this.menu = false;
       this.config = false;
@@ -154,7 +160,7 @@ function panel() {
     },
 
     get hayModal() {
-      return Boolean(this.form || this.formFijo || this.detalle || this.config || this.confirmarReinicio);
+      return Boolean(this.form || this.formFijo || this.formPromo || this.senas || this.detalle || this.config || this.confirmarReinicio);
     },
 
     // --- Menú ---
@@ -241,6 +247,8 @@ function panel() {
           Store.reservasDelDia(this.hoy),
           // En Django: esto viene de la vista de turnos fijos del panel.
           Store.turnosFijos(),
+          // En Django: esto viene de la vista de señas pendientes del panel.
+          Store.senasPendientes(),
         ]);
       } catch (error) {
         if (pedido !== this._pedido) return;
@@ -250,7 +258,10 @@ function panel() {
         return;
       }
       if (pedido !== this._pedido) return;
-      const [dias, delDia, reservasDelDia, deHoy, reservasDeHoy, fijos] = datos;
+      const [dias, delDia, reservasDelDia, deHoy, reservasDeHoy, fijos, pendientes] = datos;
+      this.pendientes = pendientes;
+      this.ahoraMs = Date.now();
+      if (this.senas && this.senas.estado === 'listo') this.senas.lista = pendientes;
       this.estadoAgenda = 'listo';
       this.dias = dias;
       this.columnas = this.canchas.map((cancha) => this.armarColumna(cancha, delDia, reservasDelDia));
@@ -285,12 +296,15 @@ function panel() {
           h += horas;
         } else {
           const turno = turnos.find((t) => t.hora === h) || {};
+          const promo = turno.promo && turno.promo.tipo === 'turno' ? turno.promo : null;
           bloques.push({
-            key: cancha.id + '-' + h + '-libre',
+            key: [cancha.id, h, 'libre', promo ? promo.id + turno.precio : ''].join('-'),
             tipo: 'libre',
             hora: h,
             horas: 1,
             precio: turno.precio || cancha.precioHora,
+            precioNormal: turno.precioNormal || cancha.precioHora,
+            promo, // promo del dueño en este turno (la de horario no se marca: es de todas las semanas)
             pasado: this.esPasado(h + 1),
           });
           h += 1;
@@ -358,6 +372,11 @@ function panel() {
       if (tipo === 'reserva-cancelada' && datos && this.usuario) this.avisarCancelacion(datos);
     },
 
+    // ¿Se puede poner en promo? Solo si el turno no empezó todavía.
+    sePuedePromocionar(r) {
+      return r.fecha > this.hoy || (r.fecha === this.hoy && r.hora > this.horaActual);
+    },
+
     // Un jugador canceló desde "Mis reservas": el turno ya quedó libre en la agenda.
     avisarCancelacion(r) {
       const cancha = this.canchas.find((c) => c.id === r.canchaId) || {};
@@ -367,8 +386,183 @@ function panel() {
         tipo: 'cancelada',
         titulo: nombre + ' canceló — ' + (cancha.tipo || cancha.nombre || '') + ', ' + r.hora + ' hs',
         texto: cuando + ' · ' + Fmt.rango(r.hora, r.horas || 1) + ' · el turno quedó libre',
+        // El pedido del dueño: ofrecer ponerlo en promo con el precio para editar
+        accion: this.sePuedePromocionar(r)
+          ? { texto: '¿Lo ponés en promo?', hacer: () => this.abrirPromo(cancha, r.fecha, r.hora) }
+          : null,
+        duracion: 15000,
       });
       this.sonar();
+    },
+
+    // ---------- Promos ----------
+
+    // Precio que se propone: el de promo de la cancha (datos.js) o un 15 % menos, redondeado a mil
+    precioSugerido(cancha) {
+      if (cancha.precioPromo && cancha.precioPromo < cancha.precioHora) return cancha.precioPromo;
+      return Math.round((cancha.precioHora * 0.85) / 1000) * 1000;
+    },
+
+    // Abre la hoja de la promo. Si el turno ya está en promo, la abre para cambiar el precio o quitarla.
+    abrirPromo(cancha, fecha, hora, promo = null, precioActual = null) {
+      this.aviso = null;
+      this.form = null;
+      this.formPromo = {
+        cancha,
+        fecha,
+        hora,
+        precio: String(promo && precioActual ? precioActual : this.precioSugerido(cancha)),
+        precioNormal: cancha.precioHora,
+        promoId: promo ? promo.id : null,
+        error: '',
+        guardando: false,
+      };
+      this.iconos();
+      this.$nextTick(() => this.$refs.precioPromo && this.$refs.precioPromo.select());
+    },
+
+    // Desde un hueco libre de la agenda (botón en la hoja de reserva manual)
+    abrirPromoDesdeManual() {
+      const f = this.form;
+      const bloque = this.columnas.find((c) => c.cancha.id === f.cancha.id).bloques.find((b) => b.hora === f.hora) || {};
+      this.abrirPromo(f.cancha, f.fecha, f.hora, bloque.promo, bloque.precio);
+    },
+
+    get descuentoPromo() {
+      const f = this.formPromo;
+      const precio = Number(String(f ? f.precio : '').replace(/\D/g, ''));
+      if (!f || !precio || precio >= f.precioNormal) return '';
+      return Math.round((1 - precio / f.precioNormal) * 100) + ' % menos';
+    },
+
+    async guardarPromo() {
+      const f = this.formPromo;
+      if (!f || f.guardando) return;
+      const precio = Number(String(f.precio).replace(/\D/g, ''));
+      f.guardando = true;
+      f.error = '';
+      let resultado;
+      try {
+        // En Django: POST a la vista de promos del panel
+        resultado = await Store.ponerEnPromo({ canchaId: f.cancha.id, fecha: f.fecha, hora: f.hora, precio });
+      } catch (error) {
+        f.guardando = false;
+        f.error = 'No se pudo guardar: revisá la conexión y probá de nuevo.';
+        return;
+      }
+      f.guardando = false;
+      if (!resultado.ok) {
+        f.error = resultado.error;
+        return;
+      }
+      this.formPromo = null;
+      if (f.fecha !== this.fecha) this.fecha = f.fecha;
+      await this.recargar({ silencioso: true });
+      this.mostrarAviso({
+        tipo: 'ok',
+        titulo: f.promoId ? 'Precio de la promo cambiado' : 'Turno en promo',
+        texto: (f.cancha.tipo || f.cancha.nombre) + ' · ' + Fmt.dia(f.fecha) + ' ' + Fmt.rango(f.hora) + ' · ' + Fmt.pesos(precio) + ' · ya brilla en la app',
+      });
+    },
+
+    async quitarPromo() {
+      const f = this.formPromo;
+      if (!f || !f.promoId || f.guardando) return;
+      f.guardando = true;
+      try {
+        // En Django: DELETE a la vista de promos del panel
+        await Store.quitarPromo(f.promoId);
+      } catch (error) {
+        f.guardando = false;
+        f.error = 'No se pudo quitar: revisá la conexión y probá de nuevo.';
+        return;
+      }
+      this.formPromo = null;
+      await this.recargar({ silencioso: true });
+      this.mostrarAviso({ tipo: 'ok', titulo: 'Promo quitada', texto: (f.cancha.tipo || f.cancha.nombre) + ' · ' + Fmt.dia(f.fecha) + ' ' + Fmt.rango(f.hora) });
+    },
+
+    // ---------- Señas pendientes ----------
+
+    async abrirSenas() {
+      this.senas = { estado: 'cargando', lista: [], liberando: null };
+      this.iconos();
+      try {
+        const lista = await Store.senasPendientes();
+        if (!this.senas) return;
+        this.senas.lista = lista;
+        this.senas.estado = 'listo';
+        this.pendientes = lista;
+        this.ahoraMs = Date.now();
+      } catch (error) {
+        if (this.senas) this.senas.estado = 'error';
+      }
+      this.iconos();
+    },
+
+    // Minutos desde que se hizo la reserva y en qué color mostrarlo
+    // ok: todavía en tiempo · aviso: pasó el mínimo · vencida: pasó el máximo (se puede liberar)
+    esperaSena(r) {
+      const minutos = Math.max(0, Math.floor((this.ahoraMs - Date.parse(r.creadaEn)) / 60000));
+      const limites = this.complejo.minutosParaSenar || { minimo: 15, maximo: 30 };
+      let texto;
+      if (minutos < 1) texto = 'recién';
+      else if (minutos < 60) texto = 'hace ' + minutos + ' min';
+      else if (minutos < 60 * 24) texto = 'hace ' + Math.floor(minutos / 60) + ' h ' + (minutos % 60 ? (minutos % 60) + ' min' : '');
+      else texto = 'hace ' + Math.floor(minutos / (60 * 24)) + ' días';
+      const nivel = minutos >= limites.maximo ? 'vencida' : minutos >= limites.minimo ? 'aviso' : 'ok';
+      return { texto: texto.trim(), nivel };
+    },
+
+    textoTurno(r) {
+      const cancha = this.canchas.find((c) => c.id === r.canchaId) || {};
+      const cuando = r.fecha === this.hoy ? 'Hoy' : Fmt.dia(r.fecha);
+      return (cancha.tipo || cancha.nombre || '') + ' · ' + cuando + ' · ' + Fmt.rango(r.hora, r.horas || 1);
+    },
+
+    async senaRecibidaDesdeLista(r, medio) {
+      let resultado;
+      try {
+        resultado = await Store.marcarSenaRecibida(r.id, medio);
+      } catch (error) {
+        return this.avisarError('No se pudo registrar la seña');
+      }
+      if (!resultado.ok) return this.mostrarAviso({ tipo: 'error', titulo: 'No se registró la seña', texto: resultado.error });
+      await this.recargar({ silencioso: true });
+      this.mostrarAviso({
+        tipo: 'ok',
+        titulo: medio === 'transferencia' ? 'Seña recibida por transferencia' : 'Seña cobrada en efectivo',
+        texto: r.nombre + ' · ' + Fmt.pesos(r.sena),
+      });
+    },
+
+    // Primer toque: pide confirmar. Segundo toque: libera.
+    async liberar(r) {
+      if (this.senas.liberando !== r.id) {
+        this.senas.liberando = r.id;
+        return;
+      }
+      let resultado;
+      try {
+        // En Django: POST a la vista que libera la reserva
+        resultado = await Store.liberarReserva(r.id);
+      } catch (error) {
+        this.senas.liberando = null;
+        return this.avisarError('No se pudo liberar el turno');
+      }
+      this.senas.liberando = null;
+      if (!resultado.ok) return this.mostrarAviso({ tipo: 'error', titulo: 'No se liberó', texto: resultado.error });
+      await this.recargar({ silencioso: true });
+      const cancha = this.canchas.find((c) => c.id === r.canchaId) || {};
+      this.mostrarAviso({
+        tipo: 'cancelada',
+        titulo: 'Liberaste el turno de ' + (r.nombre || '').trim().split(' ')[0],
+        texto: this.textoTurno(r) + ' · ya está libre en la app',
+        accion: this.sePuedePromocionar(r)
+          ? { texto: '¿Lo ponés en promo?', hacer: () => { this.senas = null; this.abrirPromo(cancha, r.fecha, r.hora); } }
+          : null,
+        duracion: 15000,
+      });
     },
 
     // Una acción no se pudo hacer (sin conexión o el servidor falló)
@@ -408,11 +602,18 @@ function panel() {
       });
     },
 
+    // aviso = { tipo, titulo, texto, accion?: { texto, hacer }, duracion? (ms, 6500 por defecto) }
     mostrarAviso(aviso) {
       clearTimeout(this._timerAviso);
-      this.aviso = Object.assign({ id: Date.now() }, aviso);
+      this.aviso = Object.assign({ id: Date.now(), duracion: 6500 }, aviso);
       this.iconos();
-      this._timerAviso = setTimeout(() => (this.aviso = null), 6500);
+      this._timerAviso = setTimeout(() => (this.aviso = null), this.aviso.duracion);
+    },
+
+    hacerAccionAviso() {
+      const accion = this.aviso && this.aviso.accion;
+      this.aviso = null;
+      if (accion) accion.hacer();
     },
 
     prepararSonido() {
@@ -465,6 +666,7 @@ function panel() {
         horas: 1,
         maxHoras: Math.min(seguidas, PANEL_MAX_HORAS_MANUAL),
         precio: bloque.precio || 0,
+        promo: bloque.promo || null, // promo del dueño en este turno
         nombre: '',
         telefono: '',
         senaEfectivo: false,

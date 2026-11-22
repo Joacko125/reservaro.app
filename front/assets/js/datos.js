@@ -34,7 +34,7 @@ const COMPLEJO = {
   turnosFijos: 'los carga el dueño',
   cancelacionGratuita: false,
   comisionMercadoPago: 'complejo',            // la paga el complejo, no el jugador
-  // Promo de lunes a viernes de 13:00 a 18:00 inclusive (último turno en promo: 18 a 19). Todavía no la usa ninguna pantalla.
+  // Promo de lunes a viernes de 13:00 a 18:00 inclusive (último turno en promo: 18 a 19). El precio lo calcula el Store (turnosDelDia y reservar).
   promo: { dias: [1, 2, 3, 4, 5], desde: 13, hasta: 19 },
   canchas: [
     { id: 'f5', nombre: 'Cancha F5', tipo: 'F5', techada: true, superficie: 'Sintético', precioHora: 44000, precioPromo: 38000 },

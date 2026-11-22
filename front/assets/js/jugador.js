@@ -23,6 +23,7 @@ function jugador() {
     horas: [],           // horas de inicio de los turnos: 13..23
     dias: [],            // los días de la ventana de reserva (14), 'AAAA-MM-DD'
     libresPorDia: {},    // { 'AAAA-MM-DD': cantidad de turnos libres }
+    diasConPromo: {},    // { 'AAAA-MM-DD': true } si ese día hay algún turno en promo del dueño (puntito lima)
     fecha: null,
     turnos: [],          // [Turno] del día elegido, de las dos canchas
     filas: [],           // [{ hora, turnos: [Turno de cada cancha] }] para dibujar la grilla
@@ -123,6 +124,10 @@ function jugador() {
         this.libresPorDia = Object.fromEntries(this.dias.map((dia, i) => [
           dia,
           porDia[i].filter((turno) => turno.estado === 'libre' && !turno.pasado).length,
+        ]));
+        this.diasConPromo = Object.fromEntries(this.dias.map((dia, i) => [
+          dia,
+          porDia[i].some((turno) => this.esPromoDelDuenio(turno)),
         ]));
         this.estadoTurnos = 'listo';
       } catch (error) {
@@ -254,7 +259,35 @@ function jugador() {
 
     textoCelda(turno) {
       const textos = { pasado: 'Ya pasó', elegido: 'Elegido', libre: 'Libre', reservado: 'Reservado', fijo: 'Fijo' };
-      return textos[this.estadoCelda(turno)];
+      const estado = this.estadoCelda(turno);
+      if (estado === 'libre' && this.esPromoDelDuenio(turno)) return '¡Promo!';
+      return textos[estado];
+    },
+
+    // Promo que puso el dueño en un turno libre: brilla. La promo de horario (lun a vie) solo baja el precio.
+    esPromoDelDuenio(turno) {
+      return Boolean(turno && turno.estado === 'libre' && !turno.pasado && turno.promo && turno.promo.tipo === 'turno');
+    },
+
+    tienePrecioPromo(turno) {
+      return Boolean(turno && turno.promo && turno.precioNormal > turno.precio);
+    },
+
+    // Suma el precio de cada hora elegida: alguna puede estar en promo
+    totalSeleccion(s) {
+      const cancha = this.canchas.find((una) => una.id === s.canchaId);
+      let total = 0;
+      for (let hora = s.desde; hora < s.desde + s.horas; hora++) {
+        const turno = this.turno(s.canchaId, hora);
+        total += turno && turno.precio ? turno.precio : cancha.precioHora;
+      }
+      return total;
+    },
+
+    // Lo que se ahorra con las promos (0 si no hay ninguna)
+    ahorroSeleccion(s) {
+      const cancha = this.canchas.find((una) => una.id === s.canchaId);
+      return cancha.precioHora * s.horas - this.totalSeleccion(s);
     },
 
     estaElegido(turno) {
@@ -335,7 +368,7 @@ function jugador() {
         dia: this.fecha === this.dias[0] ? 'Hoy' : Fmt.dia(this.fecha),
         rango: Fmt.rango(s.desde, s.horas),
         horas: s.horas === 1 ? '1 hora' : `${s.horas} horas`,
-        total: Fmt.pesos(cancha.precioHora * s.horas),
+        total: Fmt.pesos(this.totalSeleccion(s)),
         sena: Fmt.pesos(this.complejo.senaPorHora * s.horas),
       };
     },
@@ -396,7 +429,8 @@ function jugador() {
     abrirResumen() {
       const s = this.seleccion;
       const cancha = this.canchas.find((una) => una.id === s.canchaId);
-      const total = cancha.precioHora * s.horas;
+      const total = this.totalSeleccion(s);
+      const ahorro = this.ahorroSeleccion(s);
       const sena = this.complejo.senaPorHora * s.horas;
       this.pedido = {
         canchaId: s.canchaId,
@@ -408,6 +442,7 @@ function jugador() {
         rango: Fmt.rango(s.desde, s.horas),
         cantidadHoras: s.horas === 1 ? '1 hora' : `${s.horas} horas`,
         total: Fmt.pesos(total),
+        totalNormal: ahorro > 0 ? Fmt.pesos(total + ahorro) : '',
         sena: Fmt.pesos(sena),
         senaPorHora: Fmt.pesos(this.complejo.senaPorHora),
         saldo: Fmt.pesos(total - sena),
@@ -675,7 +710,9 @@ function jugador() {
       if (!r) return;
       const cancha = this.canchas.find((una) => una.id === r.canchaId);
       const sena = Fmt.pesos(r.sena);
-      const saldo = Fmt.pesos(cancha.precioHora * r.horas - (r.senaPagada ? r.sena : 0));
+      // precioTotal lo guarda el Store con las promos; las reservas viejas no lo tienen
+      const total = r.precioTotal || cancha.precioHora * r.horas;
+      const saldo = Fmt.pesos(total - (r.senaPagada ? r.sena : 0));
       const [anio, mes, dia] = r.fecha.split('-').map(Number);
       const enUtc = (hora) => new Date(Date.UTC(anio, mes - 1, dia, hora + 3)).toISOString().replace(/[-:]|\.\d{3}/g, '');
       const texto = (valor) => String(valor).replace(/\\/g, '\\\\').replace(/([,;])/g, '\\$1').replace(/\n/g, '\\n');

@@ -25,6 +25,8 @@ var Store = RESERVANDO_MODO !== 'demo' ? undefined : (() => {
   const CLAVES = {
     reservas: 'reservas',
     canceladas: 'canceladas',    // reservas que canceló el jugador (sirven para el puntaje)
+    liberadas: 'liberadas',      // reservas que liberó el dueño porque no llegó la seña
+    promos: 'promos',            // turnos libres que el dueño puso en promo
     fijos: 'fijos',
     marcasFijos: 'marcas-fijos', // asistencia y seña de cada día de un turno fijo
     codigos: 'codigos',          // códigos simulados enviados por "WhatsApp"
@@ -76,6 +78,34 @@ var Store = RESERVANDO_MODO !== 'demo' ? undefined : (() => {
   const buscarCancha = (canchaId) => COMPLEJO.canchas.find((cancha) => cancha.id === canchaId);
   const senaDe = (horas) => COMPLEJO.senaPorHora * horas;
   const seSuperponen = (a, b) => a.hora < b.hora + b.horas && b.hora < a.hora + a.horas;
+
+  // ---------- Precios y promos ----------
+  // Dos clases de promo:
+  //   'horario' → la promo fija del complejo (COMPLEJO.promo: lunes a viernes de 13 a 19) con cancha.precioPromo
+  //   'turno'   → un turno libre puntual que el dueño puso en promo, con el precio que eligió. Brilla en la app.
+  // Si un turno tiene las dos, gana la del dueño.
+
+  function promosGuardadas() {
+    return leer(CLAVES.promos, []);
+  }
+
+  function promoDelTurno(canchaId, fecha, hora, promos = promosGuardadas()) {
+    return promos.find((promo) => promo.canchaId === canchaId && promo.fecha === fecha && promo.hora === hora) || null;
+  }
+
+  function enPromoHoraria(cancha, fecha, hora) {
+    const promo = COMPLEJO.promo;
+    return Boolean(promo && cancha.precioPromo && promo.dias.includes(diaDeLaSemana(fecha))
+      && hora >= promo.desde && hora < promo.hasta);
+  }
+
+  // → { precio, precioNormal, promo: null | { tipo: 'turno', id } | { tipo: 'horario' } }
+  function precioDelTurno(cancha, fecha, hora, promos) {
+    const delDuenio = promoDelTurno(cancha.id, fecha, hora, promos);
+    if (delDuenio) return { precio: delDuenio.precio, precioNormal: cancha.precioHora, promo: { tipo: 'turno', id: delDuenio.id } };
+    if (enPromoHoraria(cancha, fecha, hora)) return { precio: cancha.precioPromo, precioNormal: cancha.precioHora, promo: { tipo: 'horario' } };
+    return { precio: cancha.precioHora, precioNormal: cancha.precioHora, promo: null };
+  }
 
   // Fecha y hora actuales en Argentina, sea cual sea la zona del navegador
   function ahora() {
@@ -296,16 +326,23 @@ var Store = RESERVANDO_MODO !== 'demo' ? undefined : (() => {
       const momento = ahora();
       const canchas = canchaId ? COMPLEJO.canchas.filter((cancha) => cancha.id === canchaId) : COMPLEJO.canchas;
       const ocupadas = api.reservasDelDia(fecha);
+      const promos = promosGuardadas();
       const turnos = [];
       canchas.forEach((cancha) => {
         for (let hora = DESDE; hora < HASTA; hora++) {
           const reserva = ocupadas.find((una) => una.canchaId === cancha.id && hora >= una.hora && hora < una.hora + una.horas);
+          // Los turnos ocupados no muestran promo: la promo es para llenar los libres
+          const precio = reserva
+            ? { precio: cancha.precioHora, precioNormal: cancha.precioHora, promo: null }
+            : precioDelTurno(cancha, fecha, hora, promos);
           turnos.push({
             canchaId: cancha.id,
             fecha,
             hora,
             estado: !reserva ? 'libre' : reserva.origen === 'fijo' ? 'fijo' : 'reservado',
-            precio: cancha.precioHora,
+            precio: precio.precio,
+            precioNormal: precio.precioNormal,
+            promo: precio.promo,
             reservaId: reserva ? reserva.id : null,
             pasado: yaEmpezo(fecha, hora, momento),
           });
@@ -355,6 +392,14 @@ var Store = RESERVANDO_MODO !== 'demo' ? undefined : (() => {
         .find((otra) => otra.canchaId === cancha.id && seSuperponen(otra, { hora, horas }));
       if (choque) return fallo(`Ese horario ya está ocupado (${Fmt.rango(choque.hora, choque.horas)}).`);
 
+      // Precio de cada hora con sus promos. Las promos del dueño se usan una sola vez: se borran al reservar.
+      const promos = promosGuardadas();
+      let precioTotal = 0;
+      for (let h = hora; h < hora + horas; h++) precioTotal += precioDelTurno(cancha, datos.fecha, h, promos).precio;
+      const usadas = promos.filter((promo) => promo.canchaId === cancha.id && promo.fecha === datos.fecha
+        && promo.hora >= hora && promo.hora < hora + horas);
+      if (usadas.length) guardar(CLAVES.promos, promos.filter((promo) => !usadas.includes(promo)));
+
       const reserva = {
         id: nuevoId('r'),
         canchaId: cancha.id,
@@ -364,6 +409,8 @@ var Store = RESERVANDO_MODO !== 'demo' ? undefined : (() => {
         nombre,
         telefono,
         origen,
+        precioTotal,
+        enPromo: usadas.length > 0,
         sena: senaDe(horas),
         senaPagada: medioSena !== null,
         medioSena,
@@ -420,6 +467,82 @@ var Store = RESERVANDO_MODO !== 'demo' ? undefined : (() => {
 
     marcarSenaEfectivo(reservaId) {
       return api.marcarSenaRecibida(reservaId, 'efectivo');
+    },
+
+    // ----- Señas pendientes (panel) -----
+
+    // [Reserva] web que todavía esperan la seña y no empezaron, de la más vieja a la más nueva.
+    // En Django: esto viene de la vista de señas pendientes del panel
+    senasPendientes() {
+      const momento = ahora();
+      return reservasGuardadas()
+        .filter((reserva) => !reserva.senaPagada && reserva.origen === 'web' && !yaEmpezo(reserva.fecha, reserva.hora, momento))
+        .sort((a, b) => a.creadaEn.localeCompare(b.creadaEn));
+    },
+
+    // El dueño libera una reserva porque no llegó la seña: el turno vuelve a quedar libre.
+    // En Django: POST a la vista que libera la reserva
+    liberarReserva(reservaId) {
+      const reservas = reservasGuardadas();
+      const reserva = reservas.find((una) => una.id === reservaId);
+      if (!reserva) return fallo('No encontramos esa reserva. Puede que ya no exista.');
+      if (reserva.senaPagada) return fallo('Esa reserva ya tiene la seña paga: no se libera.');
+      guardar(CLAVES.reservas, reservas.filter((una) => una.id !== reservaId));
+      const liberada = Object.assign({}, reserva, { liberadaEn: new Date().toISOString() });
+      guardar(CLAVES.liberadas, leer(CLAVES.liberadas, []).concat(liberada));
+      avisar('reserva-liberada', liberada);
+      return { ok: true, reserva: liberada };
+    },
+
+    // ----- Promos del dueño -----
+
+    // [Promo] de turnos que todavía se pueden reservar: { id, canchaId, fecha, hora, precio, creadaEn }
+    // En Django: esto viene de la vista de promos (la usan el jugador y el panel)
+    promos() {
+      const momento = ahora();
+      return promosGuardadas()
+        .filter((promo) => !yaEmpezo(promo.fecha, promo.hora, momento))
+        .filter((promo) => !api.reservasDelDia(promo.fecha)
+          .some((r) => r.canchaId === promo.canchaId && promo.hora >= r.hora && promo.hora < r.hora + r.horas))
+        .sort((a, b) => a.fecha.localeCompare(b.fecha) || a.hora - b.hora);
+    },
+
+    // datos = { canchaId, fecha, hora, precio }. Si el turno ya estaba en promo, le cambia el precio.
+    // En Django: POST a la vista de promos del panel
+    ponerEnPromo(datos = {}) {
+      const cancha = buscarCancha(datos.canchaId);
+      if (!cancha) return fallo('Esa cancha no existe.');
+      if (!fechaValida(datos.fecha)) return fallo('La fecha no es válida.');
+      const hora = Number(datos.hora);
+      if (!Number.isInteger(hora) || hora < DESDE || hora >= HASTA) return fallo('El turno no es válido.');
+      if (yaEmpezo(datos.fecha, hora)) return fallo('Ese turno ya empezó.');
+      const precio = Math.round(Number(datos.precio));
+      if (!Number.isFinite(precio) || precio <= 0) return fallo('Poné el precio de la promo.');
+      if (precio >= cancha.precioHora) return fallo(`La promo tiene que ser más barata que ${Fmt.pesos(cancha.precioHora)}.`);
+      if (precio < COMPLEJO.senaPorHora) return fallo(`La promo no puede ser menor que la seña (${Fmt.pesos(COMPLEJO.senaPorHora)}).`);
+      const ocupado = api.reservasDelDia(datos.fecha)
+        .some((r) => r.canchaId === cancha.id && hora >= r.hora && hora < r.hora + r.horas);
+      if (ocupado) return fallo('Ese turno ya está reservado.');
+
+      const promos = promosGuardadas();
+      const existente = promoDelTurno(cancha.id, datos.fecha, hora, promos);
+      const promo = existente
+        ? Object.assign(existente, { precio })
+        : { id: nuevoId('p'), canchaId: cancha.id, fecha: datos.fecha, hora, precio, creadaEn: new Date().toISOString() };
+      if (!existente) promos.push(promo);
+      guardar(CLAVES.promos, promos);
+      avisar('promo-nueva', promo);
+      return { ok: true, promo: copia(promo) };
+    },
+
+    // En Django: DELETE a la vista de promos del panel
+    quitarPromo(promoId) {
+      const promos = promosGuardadas();
+      const promo = promos.find((una) => una.id === promoId);
+      if (!promo) return fallo('Esa promo ya no existe.');
+      guardar(CLAVES.promos, promos.filter((una) => una.id !== promoId));
+      avisar('promo-quitada', promo);
+      return { ok: true, promo };
     },
 
     // Lo que pierde el jugador si cancela. Se muestra ANTES de confirmar.

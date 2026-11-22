@@ -11,6 +11,8 @@
 // se cambian acá y en ningún otro lado. Todas responden JSON con { ok, ... }.
 //   GET  /api/complejo                         → { ok, complejo }   (complejo incluye canchas)
 //   GET  /api/turnos?fecha=AAAA-MM-DD[&cancha=] → { ok, turnos }
+//        cada turno: { canchaId, fecha, hora, estado, precio, precioNormal, promo, reservaId, pasado }
+//        promo: null | { tipo: 'turno', id } (la puso el dueño) | { tipo: 'horario' } (lun a vie 13 a 19)
 //   POST /api/reservas                         → { ok, reserva }
 //   GET  /api/mis-reservas                     → { ok, reservas }   (del usuario logueado)
 //   GET  /api/reservas/<id>/cancelacion        → { ok, senaSeDevuelve, senaPagada, sena, puntos }
@@ -18,6 +20,11 @@
 //   GET  /api/panel/reservas?fecha=            → { ok, reservas }   (solo dueño, incluye fijos)
 //   POST /api/panel/reservas/<id>/asistencia   { estado }  → { ok, reserva }
 //   POST /api/panel/reservas/<id>/sena         { medio }   → { ok, reserva }
+//   GET  /api/panel/senas-pendientes           → { ok, reservas }   (web, sin seña, de la más vieja a la más nueva)
+//   POST /api/panel/reservas/<id>/liberar      → { ok, reserva }    (no llegó la seña: el turno queda libre)
+//   GET  /api/promos                           → { ok, promos }     (público: las usa la app del jugador)
+//   POST /api/panel/promos     { canchaId, fecha, hora, precio } → { ok, promo }
+//   DELETE /api/panel/promos/<id>              → { ok, promo }
 //   GET  /api/panel/fijos                      → { ok, fijos }
 //   POST /api/panel/fijos                      → { ok, turnoFijo }
 //   DELETE /api/panel/fijos/<id>               → { ok, turnoFijo }
@@ -174,6 +181,19 @@ var Store = RESERVANDO_MODO !== 'api' ? Store : (() => {
     async marcarSenaEfectivo(reservaId) {
       return api('POST', `/panel/reservas/${enLaRuta(reservaId)}/sena`, { medio: 'efectivo' });
     },
+
+    // ----- Señas pendientes y promos -----
+    async senasPendientes() {
+      const r = await api('GET', '/panel/senas-pendientes');
+      return r.ok ? r.reservas : [];
+    },
+    async liberarReserva(reservaId) { return api('POST', `/panel/reservas/${enLaRuta(reservaId)}/liberar`); },
+    async promos() {
+      const r = await api('GET', '/promos');
+      return r.ok ? r.promos : [];
+    },
+    async ponerEnPromo(datos = {}) { return api('POST', '/panel/promos', datos); },
+    async quitarPromo(promoId) { return api('DELETE', `/panel/promos/${enLaRuta(promoId)}`); },
 
     // ----- Turnos fijos -----
     async turnosFijos() {
