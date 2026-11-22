@@ -22,7 +22,10 @@
   <script src="https://unpkg.com/lucide@0.460.0/dist/umd/lucide.min.js"></script>
   <!-- 5. Datos y utilidades compartidas -->
   <script src="/assets/js/formato.js"></script>
+  <!-- modo.js elige de dónde salen los datos: demo (store-demo.js) o API de Django (store-api.js) -->
+  <script src="/assets/js/modo.js"></script>
   <script src="/assets/js/store-demo.js"></script>
+  <script src="/assets/js/store-api.js"></script>
   <script src="/assets/js/include.js"></script>
   <!-- 6. JS de la página -->
   <script src="/assets/js/login-telefono.js"></script>
@@ -62,8 +65,40 @@
      x-effect="document.body.classList.toggle('overflow-hidden', hayModal)"
      @keydown.escape.window="cerrarModales()">
 
+  <!-- ============ Página cargando: esqueleto con la forma del panel ============ -->
+  <!-- Va antes que el ingreso: así no aparece el login un segundo mientras se fija si ya hay sesión -->
+  <div x-show="estado === 'cargando'" class="min-h-screen bg-marca-oscuro" aria-busy="true" aria-label="Cargando el panel">
+    <div class="mx-auto flex h-16 max-w-7xl items-center gap-3 px-4 sm:px-6">
+      <span class="h-9 w-9 animate-pulse rounded-xl bg-white/10"></span>
+      <span class="h-4 w-24 animate-pulse rounded bg-white/10"></span>
+    </div>
+    <div class="mx-auto max-w-7xl animate-pulse px-4 pt-6 sm:px-6">
+      <div class="h-4 w-40 rounded bg-white/10"></div>
+      <div class="mt-3 h-8 w-56 rounded bg-white/10"></div>
+      <div class="mt-6 grid grid-cols-2 gap-3 sm:grid-cols-3">
+        <div class="h-32 rounded-3xl bg-white/[0.06]"></div>
+        <div class="h-32 rounded-3xl bg-white/[0.06]"></div>
+        <div class="col-span-2 h-32 rounded-3xl bg-club/30 sm:col-span-1"></div>
+      </div>
+      <div class="mt-6 h-96 rounded-[2rem] bg-white/[0.06]"></div>
+    </div>
+  </div>
+
+  <!-- ============ Página con error: no se pudo traer el complejo o la sesión ============ -->
+  <div x-show="estado === 'error'" class="flex min-h-screen items-center justify-center bg-marca-oscuro px-4 text-white">
+    <div class="flex max-w-sm flex-col items-center rounded-3xl bg-white/[0.06] px-6 py-10 text-center ring-1 ring-inset ring-white/10">
+      <span class="grid h-14 w-14 place-items-center rounded-2xl bg-alerta/15 text-alerta"><i data-lucide="wifi-off" class="h-7 w-7"></i></span>
+      <p class="mt-4 font-titulo text-2xl font-extrabold">No pudimos abrir el panel</p>
+      <p class="mt-1 text-sm text-white/60">Revisá la conexión y probá de nuevo.</p>
+      <button type="button" @click="cargar()"
+              class="mt-6 inline-flex h-12 items-center gap-2 rounded-2xl bg-marca px-6 font-semibold text-marca-oscuro transition hover:brightness-105 active:scale-[0.98]">
+        <i data-lucide="rotate-cw" class="h-5 w-5"></i>Reintentar
+      </button>
+    </div>
+  </div>
+
   <!-- ============ Entrada: ingreso con teléfono (componente de PC 1) ============ -->
-  <main x-show="!usuario" class="relative flex min-h-screen items-center justify-center overflow-hidden bg-marca-oscuro px-4 py-10">
+  <main x-show="estado === 'listo' && !usuario" class="relative flex min-h-screen items-center justify-center overflow-hidden bg-marca-oscuro px-4 py-10">
     <div aria-hidden="true" class="pointer-events-none absolute -top-32 left-1/2 h-[28rem] w-[28rem] -translate-x-1/2 rounded-full bg-club/30 blur-3xl"></div>
     <div aria-hidden="true" class="pointer-events-none absolute -bottom-40 right-0 h-80 w-80 rounded-full bg-marca/20 blur-3xl"></div>
 
@@ -71,7 +106,7 @@
   </main>
 
   <!-- ============ Panel ============ -->
-  <div x-show="usuario">
+  <div x-show="estado === 'listo' && usuario">
 
     <!-- Encabezado -->
     <header class="sticky top-0 z-30 bg-marca-oscuro/90 text-white backdrop-blur-xl">
@@ -143,7 +178,7 @@
               <span class="h-2 w-2 rounded-full bg-ocupado"></span>
               Reservados hoy
             </div>
-            <p class="mt-3 font-titulo text-4xl font-extrabold tabular-nums lg:text-5xl" x-text="resumen.reservados"></p>
+            <p class="mt-3 font-titulo text-4xl font-extrabold tabular-nums lg:text-5xl" x-text="estadoAgenda === 'error' ? '—' : resumen.reservados"></p>
             <p class="mt-1 text-xs text-white/50">
               de <span x-text="resumen.total"></span> turnos · <span x-text="resumen.ocupacion + '%'"></span>
             </p>
@@ -157,7 +192,7 @@
               <span class="h-2 w-2 rounded-full bg-libre"></span>
               Libres hoy
             </div>
-            <p class="mt-3 font-titulo text-4xl font-extrabold tabular-nums lg:text-5xl" x-text="resumen.libres"></p>
+            <p class="mt-3 font-titulo text-4xl font-extrabold tabular-nums lg:text-5xl" x-text="estadoAgenda === 'error' ? '—' : resumen.libres"></p>
             <p class="mt-1 text-xs text-white/50">
               <span x-text="resumen.porDelante"></span> todavía por delante
             </p>
@@ -171,10 +206,16 @@
               <i data-lucide="wallet" class="h-3.5 w-3.5"></i>
               Señas cobradas hoy
             </div>
-            <p class="mt-3 font-titulo text-4xl font-extrabold tabular-nums lg:text-5xl" x-text="Fmt.pesos(resumen.senas)"></p>
+            <p class="mt-3 font-titulo text-4xl font-extrabold tabular-nums lg:text-5xl" x-text="estadoAgenda === 'error' ? '—' : Fmt.pesos(resumen.senas)"></p>
             <p class="mt-1 text-xs text-white/80">
-              Mercado Pago <span class="font-semibold" x-text="Fmt.pesos(resumen.senasMP)"></span>
+              Transferencia <span class="font-semibold" x-text="Fmt.pesos(resumen.senasTransferencia)"></span>
               · Efectivo <span class="font-semibold" x-text="Fmt.pesos(resumen.senasEfectivo)"></span>
+              <span x-show="resumen.senasMP">· Mercado Pago <span class="font-semibold" x-text="Fmt.pesos(resumen.senasMP)"></span></span>
+            </p>
+            <!-- Reservas web esperando el comprobante: el dueño las marca en el detalle -->
+            <p x-show="resumen.pendientes" class="mt-2 inline-flex items-center gap-1.5 rounded-full bg-white/15 px-2.5 py-1 text-xs font-semibold">
+              <span class="h-1.5 w-1.5 rounded-full bg-fijo"></span>
+              <span x-text="resumen.pendientes === 1 ? '1 seña esperando comprobante' : resumen.pendientes + ' señas esperando comprobante'"></span>
             </p>
           </article>
         </div>
@@ -233,8 +274,36 @@
           </template>
         </div>
 
+        <!-- Agenda cargando: esqueleto con las dos columnas -->
+        <div x-show="estadoAgenda === 'cargando'" class="mt-5 animate-pulse space-y-2" aria-busy="true" aria-label="Cargando la agenda">
+          <template x-for="i in 7" :key="i">
+            <div class="grid grid-cols-[2.5rem_minmax(0,1fr)_minmax(0,1fr)] gap-x-2 sm:grid-cols-[3.5rem_minmax(0,1fr)_minmax(0,1fr)] sm:gap-x-4">
+              <span class="ml-auto mt-2 h-4 w-8 rounded bg-marca-oscuro/10"></span>
+              <span class="h-[5.75rem] rounded-2xl bg-marca-oscuro/5"></span>
+              <span class="h-[5.75rem] rounded-2xl bg-marca-oscuro/5"></span>
+            </div>
+          </template>
+        </div>
+
+        <!-- Agenda con error -->
+        <div x-show="estadoAgenda === 'error'" class="mt-5 flex flex-col items-center rounded-3xl bg-marca-oscuro/5 px-5 py-10 text-center">
+          <span class="grid h-12 w-12 place-items-center rounded-2xl bg-alerta/15 text-alerta"><i data-lucide="wifi-off" class="h-6 w-6"></i></span>
+          <p class="mt-3 font-semibold">No pudimos traer la agenda de este día.</p>
+          <button type="button" @click="recargar()"
+                  class="mt-4 inline-flex h-11 items-center gap-2 rounded-xl bg-marca-oscuro px-4 text-sm font-semibold text-white transition hover:brightness-125">
+            <i data-lucide="rotate-cw" class="h-4 w-4"></i>Reintentar
+          </button>
+        </div>
+
+        <!-- Día sin reservas: la grilla igual se ve, con todos los huecos libres -->
+        <p x-show="estadoAgenda === 'listo' && diaSinReservas"
+           class="mt-5 flex items-center justify-center gap-2 rounded-2xl bg-libre/10 px-4 py-3 text-center text-sm text-marca-oscuro/70">
+          <i data-lucide="calendar-check" class="h-4 w-4 shrink-0 text-libre"></i>
+          Todavía no hay reservas este día. Tocá un hueco libre para cargar una.
+        </p>
+
         <!-- Grilla: horas + una columna por cancha -->
-        <div class="mt-5 grid grid-cols-[2.5rem_minmax(0,1fr)_minmax(0,1fr)] gap-x-2 sm:grid-cols-[3.5rem_minmax(0,1fr)_minmax(0,1fr)] sm:gap-x-4">
+        <div x-show="estadoAgenda === 'listo'" class="mt-5 grid grid-cols-[2.5rem_minmax(0,1fr)_minmax(0,1fr)] gap-x-2 sm:grid-cols-[3.5rem_minmax(0,1fr)_minmax(0,1fr)] sm:gap-x-4">
 
           <div></div>
           <template x-for="col in columnas" :key="'cab-' + col.cancha.id">
@@ -339,8 +408,21 @@
         <!-- ============ Turnos fijos ============ -->
         <div x-show="vista === 'fijos'">
 
+          <!-- Fijos cargando y con error -->
+          <div x-show="estadoAgenda === 'cargando'" class="animate-pulse space-y-2" aria-busy="true">
+            <div class="h-10 w-48 rounded-xl bg-marca-oscuro/5"></div>
+            <template x-for="i in 3" :key="i"><div class="h-20 rounded-2xl bg-marca-oscuro/5"></div></template>
+          </div>
+          <div x-show="estadoAgenda === 'error'" class="flex flex-col items-center rounded-3xl bg-marca-oscuro/5 px-5 py-10 text-center">
+            <p class="font-semibold">No pudimos traer los turnos fijos.</p>
+            <button type="button" @click="recargar()"
+                    class="mt-4 inline-flex h-11 items-center gap-2 rounded-xl bg-marca-oscuro px-4 text-sm font-semibold text-white transition hover:brightness-125">
+              <i data-lucide="rotate-cw" class="h-4 w-4"></i>Reintentar
+            </button>
+          </div>
+
           <!-- Vacío: invita a cargar el primero -->
-          <div x-show="!fijos.length" class="flex flex-col items-center px-4 py-12 text-center sm:py-16">
+          <div x-show="estadoAgenda === 'listo' && !fijos.length" class="flex flex-col items-center px-4 py-12 text-center sm:py-16">
             <span class="relative grid h-20 w-20 place-items-center rounded-3xl bg-fijo/15 text-fijo">
               <i data-lucide="calendar-clock" class="h-9 w-9"></i>
             </span>
@@ -357,7 +439,7 @@
           </div>
 
           <!-- Lista agrupada por día -->
-          <div x-show="fijos.length">
+          <div x-show="estadoAgenda === 'listo' && fijos.length">
             <div class="flex items-center justify-between gap-3">
               <div>
                 <h2 class="font-titulo text-xl font-extrabold tracking-tight sm:text-2xl">Turnos fijos</h2>
@@ -416,10 +498,11 @@
     <template x-for="a in (aviso ? [aviso] : [])" :key="a.id">
       <div class="aviso-entra pointer-events-auto overflow-hidden rounded-3xl bg-marca-oscuro text-white shadow-2xl shadow-marca-oscuro/40 ring-1 ring-white/10">
         <div class="flex items-center gap-3 p-4">
+          <!-- tipo: 'nueva' (reserva de un jugador) | 'ok' | 'cancelada' (canceló un jugador) | 'error' -->
           <span class="relative grid h-12 w-12 shrink-0 place-items-center rounded-2xl"
-                :class="a.tipo === 'nueva' ? 'bg-club' : 'bg-libre'">
+                :class="{ nueva: 'bg-club', ok: 'bg-libre', cancelada: 'bg-fijo text-marca-oscuro', error: 'bg-alerta' }[a.tipo]">
             <span x-show="a.tipo === 'nueva'" class="absolute inset-0 animate-ping rounded-2xl bg-club opacity-40"></span>
-            <i :data-lucide="a.tipo === 'nueva' ? 'bell-ring' : 'check'" class="relative h-6 w-6"></i>
+            <i :data-lucide="{ nueva: 'bell-ring', ok: 'check', cancelada: 'calendar-x', error: 'triangle-alert' }[a.tipo]" class="relative h-6 w-6"></i>
           </span>
           <div class="min-w-0 flex-1">
             <p class="font-titulo text-base font-extrabold leading-snug" x-text="a.titulo"></p>
@@ -431,7 +514,7 @@
           </button>
         </div>
         <div class="h-1 bg-white/10">
-          <div class="vaciar h-full" :class="a.tipo === 'nueva' ? 'bg-club' : 'bg-libre'"></div>
+          <div class="vaciar h-full" :class="{ nueva: 'bg-club', ok: 'bg-libre', cancelada: 'bg-fijo', error: 'bg-alerta' }[a.tipo]"></div>
         </div>
       </div>
     </template>
@@ -799,12 +882,28 @@
             <p class="text-xs tabular-nums text-marca-oscuro/55" x-text="Fmt.pesos(detalle.reserva.sena)"></p>
           </div>
         </div>
-        <button type="button" x-show="!detalle.reserva.senaPagada" @click="cobrarSenaEfectivo()"
-                class="mt-2 flex h-14 w-full items-center justify-center gap-2 rounded-2xl bg-club font-semibold text-white shadow-lg shadow-club/25 transition hover:brightness-110 active:scale-[0.98]">
-          <i data-lucide="banknote" class="h-5 w-5"></i>
-          Seña cobrada en efectivo
-          <span x-show="detalle.reserva.sena" class="tabular-nums opacity-80" x-text="'· ' + Fmt.pesos(detalle.reserva.sena)"></span>
-        </button>
+        <div x-show="!detalle.reserva.senaPagada">
+          <p class="mt-2 flex items-center gap-2 rounded-2xl bg-fijo/15 p-3 text-sm">
+            <i data-lucide="clock" class="h-4 w-4 shrink-0 text-marca-oscuro/60"></i>
+            <span>
+              <span class="font-semibold">Seña pendiente</span>
+              <span class="tabular-nums" x-text="detalle.reserva.sena ? '· ' + Fmt.pesos(detalle.reserva.sena) : ''"></span>
+              <span x-show="detalle.reserva.origen === 'web'" class="block text-xs text-marca-oscuro/55">Cuando te llegue el comprobante por WhatsApp, marcala acá.</span>
+            </span>
+          </p>
+          <div class="mt-2 grid grid-cols-2 gap-2">
+            <button type="button" @click="cobrarSena('transferencia')"
+                    class="flex h-14 items-center justify-center gap-2 rounded-2xl bg-club px-2 text-sm font-semibold text-white shadow-lg shadow-club/25 transition hover:brightness-110 active:scale-[0.98]">
+              <i data-lucide="landmark" class="h-5 w-5 shrink-0"></i>
+              Llegó la transferencia
+            </button>
+            <button type="button" @click="cobrarSena('efectivo')"
+                    class="flex h-14 items-center justify-center gap-2 rounded-2xl bg-marca-oscuro/5 px-2 text-sm font-semibold text-marca-oscuro transition hover:bg-marca-oscuro/10 active:scale-[0.98]">
+              <i data-lucide="banknote" class="h-5 w-5 shrink-0"></i>
+              Cobré en efectivo
+            </button>
+          </div>
+        </div>
       </div>
     </div>
   </template>

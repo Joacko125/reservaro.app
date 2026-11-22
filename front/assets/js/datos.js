@@ -27,6 +27,8 @@ const COMPLEJO = {
   pagos: {
     alias: 'elmasgrande2024.mp',
     cvu: '0000003100067279994810',
+    titular: 'El Más Grande',                 // A CONFIRMAR: a nombre de quién está la cuenta
+    mercadoPago: false,                       // true en la semana de pulido: vuelve la pantalla de Mercado Pago
   },
   minutosParaSenar: { minimo: 15, maximo: 30 }, // cuánto se guarda un turno sin seña antes de liberarlo
   turnosFijos: 'los carga el dueño',

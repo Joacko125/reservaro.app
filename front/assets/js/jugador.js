@@ -10,7 +10,7 @@
 // Las recargas por cambios en vivo son "silenciosas": no vuelven a mostrar el esqueleto.
 
 // Mientras carga, el complejo trae valores vacíos para que el HTML no rompa
-const COMPLEJO_VACIO = { nombre: '', bajada: '', subdominio: '', direccion: '', logo: '', whatsapp: '', senaPorHora: 0, horario: { desde: 0, hasta: 0 } };
+const COMPLEJO_VACIO = { nombre: '', bajada: '', subdominio: '', direccion: '', logo: '', whatsapp: '', senaPorHora: 0, horario: { desde: 0, hasta: 0 }, pagos: {}, minutosParaSenar: {} };
 
 function jugador() {
   return {
@@ -33,10 +33,13 @@ function jugador() {
     usuario: null,       // sesión del ámbito 'jugador'
     despuesDelLogin: null, // 'resumen' | 'mis-reservas': adónde seguir cuando termine de entrar
     misReservas: [],     // reservas futuras del jugador, listas para mostrar
-    paso: null,          // null (grilla) | 'resumen' | 'pago' | 'confirmada' | 'mis-reservas'
+    paso: null,          // null (grilla) | 'resumen' | 'sena' | 'pago' | 'confirmada' | 'mis-reservas'
     pedido: null,        // foto de la selección al abrir el resumen
-    pagando: false,
-    reserva: null,       // la Reserva que devolvió el Store al pagar
+    pagando: false,      // mientras se guarda la reserva (con transferencia o con Mercado Pago)
+    reserva: null,       // la Reserva que devolvió el Store al reservar
+    senaDesde: null,     // de dónde se abrió la pantalla de la seña: 'resumen' | 'mis-reservas'
+    copiado: '',         // 'alias' | 'cvu': para mostrar "¡Copiado!" un ratito
+    cancelacion: null,   // { item, estado: 'cargando' | 'listo' | 'error', impacto, cancelando, error }
     mensaje: '',
     temporizadorMensaje: null,
 
@@ -163,7 +166,18 @@ function jugador() {
         dia: Fmt.diaLargo(reserva.fecha),
         rango: Fmt.rango(reserva.hora, reserva.horas),
         sena: reserva.senaPagada ? `Seña ${Fmt.pesos(reserva.sena)} pagada` : `Seña ${Fmt.pesos(reserva.sena)} pendiente`,
+        // Se puede cancelar mientras no haya empezado (la regla final la tiene el Store)
+        cancelable: !this.yaEmpezo(reserva),
       }));
+    },
+
+    yaEmpezo(reserva) {
+      const ahora = this.horaArgentina();
+      return reserva.fecha < this.dias[0] || (reserva.fecha === this.dias[0] && reserva.hora <= ahora);
+    },
+
+    horaArgentina() {
+      return Number(new Intl.DateTimeFormat('es-AR', { hour: 'numeric', hourCycle: 'h23', timeZone: 'America/Argentina/Buenos_Aires' }).format(new Date())) % 24;
     },
 
     turno(canchaId, hora) {
@@ -401,15 +415,207 @@ function jugador() {
       this.paso = 'resumen';
     },
 
+    // Con Mercado Pago va a su pantalla. Sin Mercado Pago (la prueba) se guarda el turno y se muestra el alias.
     irAPagar() {
-      this.paso = 'pago';
+      if (this.complejo.pagos.mercadoPago) {
+        this.paso = 'pago';
+        return;
+      }
+      this.reservarConTransferencia();
     },
 
     cerrarPaso() {
       if (this.pagando) return;
+      if (this.paso === 'sena') return this.cerrarSena();
       this.paso = this.paso === 'pago' ? 'resumen' : null;
       // Por si mientras miraba el resumen alguien reservó esos turnos
       if (!this.paso) this.revisarSeleccion();
+    },
+
+    // ---------- Seña por transferencia ----------
+
+    // Guarda el turno con la seña pendiente. El dueño la marca como recibida cuando le llega el comprobante.
+    async reservarConTransferencia() {
+      if (this.pagando) return;
+      this.pagando = true;
+      const p = this.pedido;
+      let resultado;
+      try {
+        // En Django: esto es el POST de la vista de reservas
+        resultado = await Store.reservar({
+          canchaId: p.canchaId,
+          fecha: p.fecha,
+          hora: p.hora,
+          horas: p.horas,
+          nombre: this.usuario.nombre,
+          telefono: this.usuario.telefono,
+          origen: 'web',
+          medioSena: null,
+        });
+      } catch (error) {
+        console.error('jugador: no se pudo guardar la reserva', error);
+        this.pagando = false;
+        this.avisar('No pudimos guardar la reserva. Revisá tu conexión y probá de nuevo.', 6000);
+        return;
+      }
+      this.pagando = false;
+      if (!resultado.ok) return this.reservaRechazada(resultado);
+      this.seleccion = null;
+      this.reserva = resultado.reserva;
+      this.senaDesde = 'resumen';
+      this.paso = 'sena';
+      this.cargarMisReservas({ silencioso: true });
+    },
+
+    // Desde "Mis reservas", para una reserva con la seña pendiente
+    abrirSena(reserva) {
+      this.reserva = reserva;
+      this.senaDesde = 'mis-reservas';
+      this.paso = 'sena';
+    },
+
+    // Lo que muestra la pantalla de la seña, armado desde la reserva guardada
+    get datosSena() {
+      const r = this.reserva;
+      if (!r) return null;
+      const pagos = this.complejo.pagos || {};
+      return {
+        cancha: this.nombreCancha(r.canchaId),
+        dia: Fmt.diaLargo(r.fecha),
+        rango: Fmt.rango(r.hora, r.horas),
+        sena: Fmt.pesos(r.sena),
+        alias: pagos.alias || '',
+        cvu: pagos.cvu || '',
+        titular: pagos.titular || this.complejo.nombre,
+        minutos: (this.complejo.minutosParaSenar || {}).minimo || 15,
+        pagada: r.senaPagada,
+      };
+    },
+
+    // Abre el WhatsApp del complejo con el mensaje armado: el jugador solo adjunta la foto del comprobante
+    get enlaceComprobante() {
+      const d = this.datosSena;
+      if (!d) return '#';
+      const texto = [
+        `¡Hola ${this.complejo.nombre}! Te mando el comprobante de la seña.`,
+        `${d.cancha} · ${d.dia.charAt(0).toUpperCase() + d.dia.slice(1)} · ${d.rango}`,
+        `A nombre de ${this.usuario ? this.usuario.nombre : ''}. Seña: ${d.sena}.`,
+      ].join('\n');
+      return `https://wa.me/549${this.complejo.whatsapp}?text=${encodeURIComponent(texto)}`;
+    },
+
+    // Copia el alias o el CVU. Si el navegador no deja usar el portapapeles, usa el método viejo.
+    async copiar(que) {
+      const texto = this.datosSena ? this.datosSena[que] : '';
+      if (!texto) return;
+      try {
+        await navigator.clipboard.writeText(texto);
+      } catch (error) {
+        const campo = document.createElement('textarea');
+        campo.value = texto;
+        campo.setAttribute('readonly', '');
+        campo.style.position = 'fixed';
+        campo.style.opacity = '0';
+        document.body.append(campo);
+        campo.select();
+        try { document.execCommand('copy'); } catch (e) { /* no hay forma de copiar */ }
+        campo.remove();
+      }
+      this.copiado = que;
+      setTimeout(() => { if (this.copiado === que) this.copiado = ''; }, 2000);
+    },
+
+    // "Ya mandé el comprobante": si venía de reservar, la confirmación; si venía de Mis reservas, vuelve ahí
+    listoSena() {
+      if (this.senaDesde === 'mis-reservas') {
+        this.paso = 'mis-reservas';
+        this.cargarMisReservas({ silencioso: true });
+        return;
+      }
+      this.paso = 'confirmada';
+    },
+
+    // Cerrar sin mandar el comprobante: el turno queda guardado con la seña pendiente
+    cerrarSena() {
+      if (this.senaDesde === 'mis-reservas') {
+        this.paso = 'mis-reservas';
+        return;
+      }
+      this.volverATurnos();
+      this.avisar('Tu turno quedó guardado con la seña pendiente. El alias está en "Mis reservas".', 6000);
+    },
+
+    // ---------- Cancelar desde Mis reservas ----------
+
+    // Primero se pregunta qué pierde (el Store sabe las reglas) y recién después se confirma
+    async pedirCancelacion(item) {
+      this.cancelacion = { item, estado: 'cargando', impacto: null, cancelando: false, error: '' };
+      try {
+        // En Django: GET a la vista de cancelación
+        const impacto = await Store.impactoCancelacion(item.reserva.id);
+        if (!this.cancelacion) return;
+        if (!impacto.ok) {
+          this.cancelacion.estado = 'listo';
+          this.cancelacion.error = impacto.error;
+          return;
+        }
+        this.cancelacion.impacto = impacto;
+        this.cancelacion.estado = 'listo';
+      } catch (error) {
+        console.error('jugador: no se pudo consultar la cancelación', error);
+        if (this.cancelacion) this.cancelacion.estado = 'error';
+      }
+    },
+
+    reintentarCancelacion() {
+      if (this.cancelacion) this.pedirCancelacion(this.cancelacion.item);
+    },
+
+    cerrarCancelacion() {
+      if (this.cancelacion && this.cancelacion.cancelando) return;
+      this.cancelacion = null;
+    },
+
+    // Los textos de lo que pierde, según lo que devolvió el Store
+    get textosCancelacion() {
+      const c = this.cancelacion;
+      if (!c || !c.impacto) return null;
+      const i = c.impacto;
+      let sena;
+      if (!i.senaPagada) sena = 'Todavía no pagaste la seña, así que no perdés plata.';
+      else if (i.senaSeDevuelve) sena = `Te devolvemos la seña de ${Fmt.pesos(i.sena)}.`;
+      else sena = `No se devuelve la seña de ${Fmt.pesos(i.sena)}.`;
+      return {
+        sena,
+        senaPierde: i.senaPagada && !i.senaSeDevuelve,
+        puntos: `Esta cancelación te baja ${i.puntos} puntos.`,
+      };
+    },
+
+    async confirmarCancelacion() {
+      const c = this.cancelacion;
+      if (!c || c.cancelando) return;
+      c.cancelando = true;
+      c.error = '';
+      let resultado;
+      try {
+        // En Django: POST a la vista de cancelación
+        resultado = await Store.cancelarReserva(c.item.reserva.id, this.usuario.telefono);
+      } catch (error) {
+        console.error('jugador: no se pudo cancelar', error);
+        c.cancelando = false;
+        c.error = 'No pudimos cancelar. Revisá tu conexión y probá de nuevo.';
+        return;
+      }
+      c.cancelando = false;
+      if (!resultado.ok) {
+        c.error = resultado.error;
+        return;
+      }
+      this.cancelacion = null;
+      await this.cargarMisReservas({ silencioso: true });
+      this.actualizar({ silencioso: true });
+      this.avisar(`Listo, cancelaste el turno del ${c.item.dia} (${c.item.rango}).`, 5000);
     },
 
     // Mercado Pago simulado: un spinner de 2 segundos y después se guarda la reserva con la seña pagada
@@ -439,16 +645,22 @@ function jugador() {
         return;
       }
       this.pagando = false;
+      if (!resultado.ok) return this.reservaRechazada(resultado);
       this.seleccion = null;
-      if (!resultado.ok) {
-        this.paso = null;
-        this.actualizar();
-        this.avisar('¡Uy! Alguien reservó ese horario mientras pagabas. Tranqui, no se te cobró nada: elegí otro turno.', 6000);
-        this.$nextTick(() => this.$refs.grilla.scrollIntoView({ behavior: 'smooth', block: 'start' }));
-        return;
-      }
       this.reserva = resultado.reserva;
       this.paso = 'confirmada';
+    },
+
+    // El Store no dejó guardar: casi siempre es que otro se llevó el turno mientras tanto
+    reservaRechazada(resultado) {
+      this.seleccion = null;
+      this.paso = null;
+      this.actualizar();
+      const ocupado = /ocupado/i.test(resultado.error || '');
+      this.avisar(ocupado
+        ? '¡Uy! Alguien reservó ese horario recién. Tranqui, no se te cobró nada: elegí otro turno.'
+        : (resultado.error || 'No pudimos guardar la reserva. Probá de nuevo.'), 6000);
+      this.$nextTick(() => this.$refs.grilla.scrollIntoView({ behavior: 'smooth', block: 'start' }));
     },
 
     volverATurnos() {

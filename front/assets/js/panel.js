@@ -1,6 +1,12 @@
 /* Panel del dueño del complejo.
    Lógica de panel/index.html, usada con x-data="panel()".
-   Todo pasa por Store: en Django, Store se reemplaza por vistas y este archivo queda igual. */
+   Todo pasa por Store: en Django, Store se reemplaza por vistas y este archivo queda igual.
+
+   Patrón de carga (el mismo que la app del jugador, ver jugador.js):
+     estado       → la página entera: 'cargando' (esqueleto) | 'listo' | 'error' (Reintentar)
+     estadoAgenda → la agenda y los fijos: se vuelve a 'cargando' al cambiar de día.
+   Las recargas por cambios en vivo, el reloj y las acciones son silenciosas: no muestran el esqueleto
+   y, si fallan, dejan lo que ya se veía. */
 
 const PANEL_MAX_HORAS_MANUAL = 4;
 
@@ -17,6 +23,8 @@ const PANEL_ORIGENES = {
 
 function panel() {
   return {
+    estado: 'cargando',        // la página: 'cargando' | 'listo' | 'error'
+    estadoAgenda: 'cargando',  // la agenda del día elegido y los fijos
     usuario: null,
     complejo: {},
     canchas: [],
@@ -36,7 +44,7 @@ function panel() {
     fecha: '',
     dias: [],
     columnas: [],
-    resumen: { reservados: 0, total: 0, ocupacion: 0, libres: 0, porDelante: 0, senas: 0, senasMP: 0, senasEfectivo: 0 },
+    resumen: { reservados: 0, total: 0, ocupacion: 0, libres: 0, porDelante: 0, senas: 0, senasMP: 0, senasTransferencia: 0, senasEfectivo: 0, pendientes: 0 },
     horaActual: 0,
     resaltada: null,
     resaltadaHoy: false,
@@ -50,32 +58,19 @@ function panel() {
     _titulo: document.title,
 
     async init() {
-      // En Django: complejo, canchas y usuario vienen del contexto de la vista del panel.
-      // El panel todavía no tiene estados de carga propios (es la tarea de otro día): espera y dibuja.
-      const [complejo, canchas, usuario, hoy] = await Promise.all([
-        Store.complejo(), Store.canchas(), Store.usuarioActual('panel'), Store.hoy(),
-      ]);
-      this.complejo = complejo || {};
-      this.canchas = canchas;
-      if (this.complejo.nombre) document.title = `Panel · ${this.complejo.nombre}`;
-      this._titulo = document.title;
-      // Horas de inicio de los turnos: de 13 a 23 (el último termina a las 00)
-      const horario = this.complejo.horario || { desde: 13, hasta: 24 };
-      this.horas = Array.from({ length: horario.hasta - horario.desde }, (_, i) => horario.desde + i);
-      this.logoOk = Boolean(this.complejo.logo);
-      this.usuario = usuario;
-      this.hoy = hoy;
-      this.fecha = this.hoy;
-      this.horaActual = horaArgentina();
-      await this.recargar();
-
-      // En Django: esto se reemplaza por polling o websockets contra el servidor.
-      Store.alCambiar((cambio) => this.alCambiarDatos(cambio));
+      // Los oyentes van antes del primer await, así no se pierde ningún evento mientras carga.
+      // En modo API, alCambiar consulta al servidor cada 10 segundos (store-api.js).
+      Store.alCambiar((cambio) => {
+        if (this.estado === 'listo') this.alCambiarDatos(cambio);
+      });
 
       // El componente login-telefono avisa cuando el dueño terminó de entrar.
       window.addEventListener('sesion-iniciada', async (e) => {
         if (e.detail.ambito !== 'panel') return;
-        this.usuario = await Store.usuarioActual('panel');
+        this.usuario = e.detail.usuario || this.usuario;
+        try {
+          this.usuario = await Store.usuarioActual('panel');
+        } catch (error) { /* nos quedamos con el usuario que mandó el login */ }
         this.recargar();
       });
 
@@ -87,20 +82,61 @@ function panel() {
 
       // Cada minuto actualiza "ahora" y, a la medianoche, pasa al día nuevo.
       setInterval(async () => {
-        const hoy = await Store.hoy();
-        if (hoy !== this.hoy) {
-          if (this.fecha === this.hoy) this.fecha = hoy;
-          this.hoy = hoy;
-        }
+        if (this.estado !== 'listo') return;
+        try {
+          const hoy = await Store.hoy();
+          if (hoy !== this.hoy) {
+            if (this.fecha === this.hoy) this.fecha = hoy;
+            this.hoy = hoy;
+          }
+        } catch (error) { /* se prueba en el próximo minuto */ }
         this.horaActual = horaArgentina();
-        this.recargar();
+        this.recargar({ silencioso: true });
       }, 60000);
+
+      await this.cargar();
+    },
+
+    // Carga de la página: complejo, canchas, sesión y la agenda de hoy.
+    // En Django: complejo, canchas y usuario vienen de la vista del complejo y de la sesión.
+    async cargar() {
+      this.estado = 'cargando';
+      try {
+        const [complejo, canchas, usuario, hoy] = await Promise.all([
+          Store.complejo(), Store.canchas(), Store.usuarioActual('panel'), Store.hoy(),
+        ]);
+        this.complejo = complejo || {};
+        this.canchas = canchas;
+        if (this.complejo.nombre) document.title = `Panel · ${this.complejo.nombre}`;
+        this._titulo = document.title;
+        // Horas de inicio de los turnos: de 13 a 23 (el último termina a las 00)
+        const horario = this.complejo.horario || { desde: 13, hasta: 24 };
+        this.horas = Array.from({ length: horario.hasta - horario.desde }, (_, i) => horario.desde + i);
+        this.logoOk = Boolean(this.complejo.logo);
+        this.usuario = usuario;
+        this.hoy = hoy;
+        if (!this.fecha) this.fecha = this.hoy;
+        this.horaActual = horaArgentina();
+      } catch (error) {
+        console.error('panel: no se pudo cargar la página', error);
+        this.estado = 'error';
+        this.iconos();
+        return;
+      }
+      this.estado = 'listo';
+      // Sin sesión no se pide la agenda: primero tiene que entrar (y la pide al iniciar sesión)
+      if (this.usuario) await this.recargar();
+      this.iconos();
     },
 
     // --- Sesión ---
 
     async salir() {
-      await Store.logout('panel');
+      try {
+        await Store.logout('panel');
+      } catch (error) {
+        return this.avisarError('No se pudo cerrar la sesión');
+      }
       this.usuario = null;
       this.cerrarModales();
       this.iconos();
@@ -145,9 +181,14 @@ function panel() {
     // solo, así la presentación no se corta.
     async reiniciarDemo() {
       const usuario = this.usuario;
-      await Store.reiniciarDemo();
-      if (usuario && !(await Store.usuarioActual('panel'))) {
-        this.usuario = await Store.login(usuario.telefono, usuario.nombre, 'panel');
+      try {
+        await Store.reiniciarDemo();
+        if (usuario && !(await Store.usuarioActual('panel'))) {
+          this.usuario = await Store.login(usuario.telefono, usuario.nombre, 'panel');
+        }
+      } catch (error) {
+        this.cerrarModales();
+        return this.avisarError('No se pudo reiniciar la demo');
       }
       this.cerrarModales();
       this.vista = 'agenda';
@@ -185,19 +226,32 @@ function panel() {
     // --- Datos ---
 
     // Pide todo junto y recién después dibuja. Si llega tarde (cambiaron de día), se descarta.
-    async recargar() {
+    // silencioso: no muestra el esqueleto y, si falla, deja lo que ya se veía.
+    async recargar({ silencioso = false } = {}) {
       const pedido = (this._pedido = (this._pedido || 0) + 1);
       const fecha = this.fecha;
-      const [dias, delDia, reservasDelDia, deHoy, reservasDeHoy, fijos] = await Promise.all([
-        Store.proximosDias(14),
-        Store.turnosDelDia(fecha),
-        Store.reservasDelDia(fecha),
-        Store.turnosDelDia(this.hoy),
-        Store.reservasDelDia(this.hoy),
-        // En Django: esto viene de la vista de turnos fijos del panel.
-        Store.turnosFijos(),
-      ]);
+      if (!silencioso) this.estadoAgenda = 'cargando';
+      let datos;
+      try {
+        datos = await Promise.all([
+          Store.proximosDias(14),
+          Store.turnosDelDia(fecha),
+          Store.reservasDelDia(fecha),
+          Store.turnosDelDia(this.hoy),
+          Store.reservasDelDia(this.hoy),
+          // En Django: esto viene de la vista de turnos fijos del panel.
+          Store.turnosFijos(),
+        ]);
+      } catch (error) {
+        if (pedido !== this._pedido) return;
+        console.error('panel: no se pudo cargar la agenda', error);
+        if (!silencioso) this.estadoAgenda = 'error';
+        this.iconos();
+        return;
+      }
       if (pedido !== this._pedido) return;
+      const [dias, delDia, reservasDelDia, deHoy, reservasDeHoy, fijos] = datos;
+      this.estadoAgenda = 'listo';
       this.dias = dias;
       this.columnas = this.canchas.map((cancha) => this.armarColumna(cancha, delDia, reservasDelDia));
       this.resumen = this.calcularResumen(deHoy, reservasDeHoy);
@@ -266,8 +320,16 @@ function panel() {
         porDelante: libres.filter((t) => t.hora >= this.horaActual).length,
         senas: suma(pagadas),
         senasMP: suma(pagadas.filter((r) => r.medioSena === 'mercadopago')),
+        senasTransferencia: suma(pagadas.filter((r) => r.medioSena === 'transferencia')),
         senasEfectivo: suma(pagadas.filter((r) => r.medioSena === 'efectivo')),
+        // Reservas de la web que todavía esperan el comprobante de la seña
+        pendientes: reservasDeHoy.filter((r) => !r.senaPagada && r.origen === 'web').length,
       };
+    },
+
+    // ¿Hay alguna reserva (o fijo) en el día que se está mirando?
+    get diaSinReservas() {
+      return this.columnas.every((col) => col.bloques.every((b) => b.tipo === 'libre'));
     },
 
     // --- En vivo ---
@@ -287,11 +349,31 @@ function panel() {
 
       // Si la reserva del jugador es de otro día, la agenda salta a ese día para que se vea.
       if (deJugador) this.vista = 'agenda';
-      if (deJugador && reserva.fecha && reserva.fecha !== this.fecha) this.fecha = reserva.fecha;
-      await this.recargar();
+      const saltaDeDia = deJugador && reserva.fecha && reserva.fecha !== this.fecha;
+      if (saltaDeDia) this.fecha = reserva.fecha;
+      await this.recargar({ silencioso: !saltaDeDia });
 
       if (reserva && this.usuario) this.resaltar(reserva);
       if (deJugador) this.anunciar(reserva);
+      if (tipo === 'reserva-cancelada' && datos && this.usuario) this.avisarCancelacion(datos);
+    },
+
+    // Un jugador canceló desde "Mis reservas": el turno ya quedó libre en la agenda.
+    avisarCancelacion(r) {
+      const cancha = this.canchas.find((c) => c.id === r.canchaId) || {};
+      const nombre = (r.nombre || 'Un jugador').trim().split(' ')[0];
+      const cuando = r.fecha === this.hoy ? 'Hoy' : Fmt.dia(r.fecha);
+      this.mostrarAviso({
+        tipo: 'cancelada',
+        titulo: nombre + ' canceló — ' + (cancha.tipo || cancha.nombre || '') + ', ' + r.hora + ' hs',
+        texto: cuando + ' · ' + Fmt.rango(r.hora, r.horas || 1) + ' · el turno quedó libre',
+      });
+      this.sonar();
+    },
+
+    // Una acción no se pudo hacer (sin conexión o el servidor falló)
+    avisarError(titulo) {
+      this.mostrarAviso({ tipo: 'error', titulo, texto: 'Revisá la conexión y probá de nuevo.' });
     },
 
     resaltar(reserva) {
@@ -439,6 +521,7 @@ function panel() {
       }
 
       this.form = null;
+      await this.recargar({ silencioso: true });
       this.resaltar(resultado.reserva);
       this.mostrarAviso({
         tipo: 'ok',
@@ -478,16 +561,32 @@ function panel() {
     // En Django: POST a la vista de asistencia.
     async marcarAsistencia(estado) {
       const r = this.detalle.reserva;
-      await Store.marcarAsistencia(r.id, r.asistencia === estado ? null : estado);
-      await this.recargar();
+      try {
+        await Store.marcarAsistencia(r.id, r.asistencia === estado ? null : estado);
+      } catch (error) {
+        return this.avisarError('No se pudo marcar la asistencia');
+      }
+      await this.recargar({ silencioso: true });
     },
 
-    // En Django: POST a la vista que registra la seña en efectivo.
-    async cobrarSenaEfectivo() {
+    // medio: 'transferencia' (llegó el comprobante) | 'efectivo' (pagó en la cancha).
+    // En Django: POST a la vista que registra la seña.
+    async cobrarSena(medio) {
       const r = this.detalle.reserva;
-      await Store.marcarSenaEfectivo(r.id);
-      await this.recargar();
-      this.mostrarAviso({ tipo: 'ok', titulo: 'Seña cobrada en efectivo', texto: r.nombre + (r.sena ? ' · ' + Fmt.pesos(r.sena) : '') });
+      let resultado;
+      try {
+        resultado = await Store.marcarSenaRecibida(r.id, medio);
+      } catch (error) {
+        return this.avisarError('No se pudo registrar la seña');
+      }
+      await this.recargar({ silencioso: true });
+      if (!resultado.ok) return this.mostrarAviso({ tipo: 'error', titulo: 'No se registró la seña', texto: resultado.error });
+      const titulo = medio === 'transferencia' ? 'Seña recibida por transferencia' : 'Seña cobrada en efectivo';
+      this.mostrarAviso({ tipo: 'ok', titulo, texto: r.nombre + (r.sena ? ' · ' + Fmt.pesos(r.sena) : '') });
+    },
+
+    cobrarSenaEfectivo() {
+      return this.cobrarSena('efectivo');
     },
 
     // --- Turnos fijos ---
@@ -563,7 +662,7 @@ function panel() {
       }
 
       this.formFijo = null;
-      await this.recargar();
+      await this.recargar({ silencioso: true });
       this.mostrarAviso({ tipo: 'ok', titulo: 'Turno fijo guardado', texto: this.textoFijo(resultado.turnoFijo || f) });
     },
 
@@ -578,8 +677,12 @@ function panel() {
       clearTimeout(this._timerBorrar);
       this.borrando = null;
       // En Django: POST a la vista que borra el turno fijo.
-      await Store.borrarTurnoFijo(fijo.id);
-      await this.recargar();
+      try {
+        await Store.borrarTurnoFijo(fijo.id);
+      } catch (error) {
+        return this.avisarError('No se pudo borrar el turno fijo');
+      }
+      await this.recargar({ silencioso: true });
       this.mostrarAviso({ tipo: 'ok', titulo: 'Turno fijo borrado', texto: fijo.responsable + ' · ' + this.textoFijo(fijo) });
     },
 
@@ -668,6 +771,9 @@ function panel() {
 function estadoSena(r) {
   if (r.senaPagada && r.medioSena === 'efectivo') {
     return { icono: 'banknote', corto: 'Efectivo', largo: 'Seña en efectivo', clase: 'bg-libre text-white' };
+  }
+  if (r.senaPagada && r.medioSena === 'transferencia') {
+    return { icono: 'landmark', corto: 'Transf.', largo: 'Seña por transferencia', clase: 'bg-libre text-white' };
   }
   if (r.senaPagada) {
     return { icono: 'circle-check', corto: 'Seña MP', largo: 'Seña por Mercado Pago', clase: 'bg-libre text-white' };

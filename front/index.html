@@ -18,7 +18,10 @@
   <link rel="stylesheet" href="/assets/css/estilos.css">
   <script src="https://unpkg.com/lucide@0.460.0/dist/umd/lucide.min.js"></script>
   <script src="/assets/js/formato.js"></script>
+  <!-- modo.js elige de dónde salen los datos: demo (store-demo.js) o API de Django (store-api.js) -->
+  <script src="/assets/js/modo.js"></script>
   <script src="/assets/js/store-demo.js"></script>
+  <script src="/assets/js/store-api.js"></script>
   <script src="/assets/js/include.js"></script>
   <script src="/assets/js/plano.js"></script>
   <script src="/assets/js/login-telefono.js"></script>
@@ -37,7 +40,7 @@
 </head>
 <body x-data="jugador()" class="min-h-screen bg-marca-oscuro font-texto text-marca-claro antialiased"
       x-effect="document.body.classList.toggle('overflow-hidden', paso !== null)"
-      @keydown.escape.window="paso && paso !== 'confirmada' && cerrarPaso()">
+      @keydown.escape.window="cancelacion ? cerrarCancelacion() : (paso && paso !== 'confirmada' && cerrarPaso())">
 
   <!-- Barra de navegador dibujada (decorativa): muestra el subdominio del complejo -->
   <div aria-hidden="true" class="mx-auto max-w-md px-3 pt-3">
@@ -89,10 +92,12 @@
       </div>
 
       <div class="relative flex items-center gap-3">
-        <!-- Logo del complejo (Store.complejo().logo). Si no carga, queda la inicial -->
-        <span x-data="{ logoOk: true }" class="grid h-16 w-16 shrink-0 place-items-center">
-          <img x-show="logoOk" :src="complejo.logo" :alt="'Escudo de ' + complejo.nombre" class="h-16 w-16 object-contain drop-shadow-lg" @error="logoOk = false">
-          <span x-cloak x-show="!logoOk" class="grid h-14 w-14 place-items-center rounded-2xl bg-marca-claro font-titulo text-3xl font-extrabold text-club-oscuro shadow-lg" x-text="(complejo.nombre || '').charAt(0)"></span>
+        <!-- Logo del complejo (Store.complejo().logo). Si no carga, queda la inicial.
+             Ojo async: el logo llega DESPUÉS de que se dibuja la página. x-effect vuelve a probar
+             cada vez que cambia complejo.logo, así un error con el logo vacío no lo esconde para siempre. -->
+        <span x-data="{ logoOk: true }" x-effect="complejo.logo; logoOk = true" class="grid h-16 w-16 shrink-0 place-items-center">
+          <img x-show="logoOk && complejo.logo" :src="complejo.logo || null" :alt="'Escudo de ' + complejo.nombre" class="h-16 w-16 object-contain drop-shadow-lg" @error="logoOk = false">
+          <span x-cloak x-show="!logoOk || !complejo.logo" class="grid h-14 w-14 place-items-center rounded-2xl bg-marca-claro font-titulo text-3xl font-extrabold text-club-oscuro shadow-lg" x-text="(complejo.nombre || '').charAt(0)"></span>
         </span>
         <div class="min-w-0 flex-1">
           <h1 class="pr-12 font-titulo text-4xl font-extrabold uppercase leading-none tracking-tight" x-text="complejo.nombre"></h1>
@@ -364,12 +369,19 @@
         <p><strong class="text-alerta">Sin cancelación gratuita.</strong> Si después no podés venir, la seña no se devuelve.</p>
       </div>
 
-      <button type="button" @click="irAPagar()"
-              class="mt-5 flex h-14 w-full items-center justify-center gap-2 rounded-2xl bg-club font-semibold text-white shadow-lg shadow-club/25 transition hover:brightness-110 active:scale-[0.98]">
-        <i data-lucide="wallet" class="h-5 w-5"></i>
-        Pagar seña con Mercado Pago
+      <button type="button" @click="irAPagar()" :disabled="pagando"
+              class="mt-5 flex h-14 w-full items-center justify-center gap-2 rounded-2xl bg-club font-semibold text-white shadow-lg shadow-club/25 transition hover:brightness-110 active:scale-[0.98] disabled:cursor-wait disabled:active:scale-100">
+        <span x-show="!pagando" class="flex items-center gap-2">
+          <i data-lucide="wallet" class="h-5 w-5"></i>
+          <span x-text="complejo.pagos.mercadoPago ? 'Pagar seña con Mercado Pago' : 'Reservar y pagar la seña'"></span>
+        </span>
+        <span x-cloak x-show="pagando" class="flex items-center gap-2">
+          <span class="h-5 w-5 animate-spin rounded-full border-2 border-marca-claro/40 border-t-marca-claro" aria-hidden="true"></span>
+          Guardando tu turno…
+        </span>
       </button>
-      <p class="mt-2 text-center text-xs text-marca-claro/45">La comisión de Mercado Pago la paga el complejo.</p>
+      <p class="mt-2 text-center text-xs text-marca-claro/45"
+         x-text="complejo.pagos.mercadoPago ? 'La comisión de Mercado Pago la paga el complejo.' : 'Te guardamos el turno y te pasamos el alias para transferir la seña.'"></p>
       <button type="button" @click="cerrarPaso()"
               class="mt-1 h-11 w-full rounded-xl text-sm font-semibold text-marca-claro/60 transition hover:text-marca-claro">
         Cambiar turno
@@ -377,7 +389,93 @@
     </section>
   </div>
 
+  <!-- ============ Seña por transferencia ============ -->
+  <!-- Mientras no esté Mercado Pago (complejo.pagos.mercadoPago = false). El turno ya quedó guardado
+       con la seña pendiente; el dueño la marca como recibida en el panel cuando le llega el comprobante. -->
+  <div x-cloak x-show="paso === 'sena'" x-transition.opacity.duration.300ms
+       class="fixed inset-0 z-50 overflow-y-auto bg-marca-oscuro" role="dialog" aria-modal="true" aria-labelledby="sena-titulo">
+    <div aria-hidden="true" class="pointer-events-none absolute left-1/2 top-0 h-72 w-72 -translate-x-1/2 rounded-full bg-fijo/15 blur-3xl"></div>
+
+    <div class="relative mx-auto max-w-md px-5 pb-[max(1.5rem,env(safe-area-inset-bottom))] pt-3">
+      <div class="flex justify-end">
+        <button type="button" @click="cerrarSena()" aria-label="Cerrar"
+                class="-mr-2 grid h-11 w-11 place-items-center rounded-full text-marca-claro/60 transition hover:bg-marca-claro/10">
+          <i data-lucide="x" class="h-5 w-5"></i>
+        </button>
+      </div>
+
+      <span class="inline-flex items-center gap-1.5 rounded-full bg-fijo/15 px-3 py-1.5 text-xs font-bold uppercase tracking-wider text-fijo">
+        <i data-lucide="clock" class="h-3.5 w-3.5"></i>Pendiente de seña
+      </span>
+      <h2 id="sena-titulo" class="mt-3 font-titulo text-4xl font-extrabold uppercase leading-none"
+          x-text="senaDesde === 'resumen' ? '¡Te guardamos el turno!' : 'Pagá la seña'"></h2>
+      <p class="mt-2 text-sm text-marca-claro/70">
+        Transferí la seña y mandá el comprobante por WhatsApp.
+        Si no llega en <span x-text="datosSena?.minutos"></span> minutos, el complejo puede liberar el turno.
+      </p>
+
+      <!-- El turno -->
+      <div class="mt-5 rounded-3xl bg-marca-claro/5 p-4 ring-1 ring-inset ring-marca-claro/10">
+        <p class="font-titulo text-2xl font-extrabold uppercase leading-none" x-text="datosSena?.cancha"></p>
+        <p class="mt-1 text-sm font-semibold first-letter:uppercase" x-text="datosSena ? datosSena.dia + ' · ' + datosSena.rango : ''"></p>
+        <div class="mt-4 flex items-baseline justify-between gap-3 border-t border-marca-claro/10 pt-3">
+          <p class="text-sm text-marca-claro/70">Seña a transferir</p>
+          <p class="font-titulo text-4xl font-extrabold leading-none text-marca" x-text="datosSena?.sena"></p>
+        </div>
+      </div>
+
+      <!-- Datos para transferir -->
+      <div class="mt-3 space-y-2 rounded-3xl bg-marca-claro/5 p-4 ring-1 ring-inset ring-marca-claro/10">
+        <div class="flex items-center gap-3">
+          <div class="min-w-0 flex-1">
+            <p class="text-xs font-semibold uppercase tracking-wider text-marca-claro/50">Alias</p>
+            <p class="break-all text-lg font-bold leading-tight" x-text="datosSena?.alias"></p>
+          </div>
+          <button type="button" @click="copiar('alias')"
+                  class="inline-flex h-11 shrink-0 items-center gap-1.5 rounded-xl px-4 text-sm font-semibold transition active:scale-95"
+                  :class="copiado === 'alias' ? 'bg-libre text-white' : 'bg-marca text-marca-oscuro hover:brightness-105'">
+            <i data-lucide="copy" class="h-4 w-4"></i>
+            <span x-text="copiado === 'alias' ? '¡Copiado!' : 'Copiar'"></span>
+          </button>
+        </div>
+        <div class="flex items-center gap-3 border-t border-marca-claro/10 pt-2">
+          <div class="min-w-0 flex-1">
+            <p class="text-xs font-semibold uppercase tracking-wider text-marca-claro/50">CVU</p>
+            <p class="break-all text-sm tabular-nums text-marca-claro/80" x-text="datosSena?.cvu"></p>
+          </div>
+          <button type="button" @click="copiar('cvu')"
+                  class="inline-flex h-11 shrink-0 items-center gap-1.5 rounded-xl px-3 text-xs font-semibold transition active:scale-95"
+                  :class="copiado === 'cvu' ? 'bg-libre text-white' : 'bg-marca-claro/10 hover:bg-marca-claro/15'">
+            <span x-text="copiado === 'cvu' ? '¡Copiado!' : 'Copiar'"></span>
+          </button>
+        </div>
+        <p class="border-t border-marca-claro/10 pt-2 text-xs text-marca-claro/50">
+          Titular: <span class="font-semibold text-marca-claro/70" x-text="datosSena?.titular"></span>
+        </p>
+      </div>
+
+      <!-- Pasos -->
+      <ol class="mt-4 space-y-2 text-sm text-marca-claro/80">
+        <li class="flex gap-3"><span class="grid h-6 w-6 shrink-0 place-items-center rounded-full bg-marca-claro/10 text-xs font-bold">1</span>Copiá el alias.</li>
+        <li class="flex gap-3"><span class="grid h-6 w-6 shrink-0 place-items-center rounded-full bg-marca-claro/10 text-xs font-bold">2</span><span>Transferí <strong class="text-marca-claro" x-text="datosSena?.sena"></strong> desde tu banco o billetera.</span></li>
+        <li class="flex gap-3"><span class="grid h-6 w-6 shrink-0 place-items-center rounded-full bg-marca-claro/10 text-xs font-bold">3</span>Mandá la captura del comprobante por WhatsApp.</li>
+      </ol>
+
+      <a :href="enlaceComprobante" target="_blank" rel="noopener"
+         class="mt-5 flex h-14 w-full items-center justify-center gap-2 rounded-2xl bg-libre font-semibold text-white shadow-lg shadow-libre/20 transition hover:brightness-110 active:scale-[0.98]">
+        <i data-lucide="message-circle" class="h-5 w-5"></i>
+        Mandar comprobante por WhatsApp
+      </a>
+      <button type="button" @click="listoSena()"
+              class="mt-2 h-12 w-full rounded-xl text-sm font-semibold text-marca-claro/70 ring-1 ring-inset ring-marca-claro/15 transition hover:bg-marca-claro/5 hover:text-marca-claro">
+        Ya lo mandé
+      </button>
+      <p class="mt-3 text-center text-xs text-marca-claro/45">La seña se confirma cuando el complejo recibe el comprobante.</p>
+    </div>
+  </div>
+
   <!-- ============ Mercado Pago simulado ============ -->
+  <!-- OCULTO en la prueba (complejo.pagos.mercadoPago = false). No se borra: vuelve en la semana de pulido. -->
   <!-- En Django: acá se redirige al checkout real de Mercado Pago -->
   <div x-cloak x-show="paso === 'pago'"
        x-transition:enter="transition duration-300 ease-out"
@@ -466,7 +564,10 @@
       </div>
 
       <h2 id="confirmada-titulo" class="mt-6 font-titulo text-5xl font-extrabold uppercase leading-none">¡Turno reservado!</h2>
-      <p class="mt-2 text-marca-claro/70" x-text="'Te esperamos, ' + primerNombre + '. Ya le avisamos al complejo.'"></p>
+      <p class="mt-2 text-marca-claro/70"
+         x-text="reserva && !reserva.senaPagada
+           ? 'Te esperamos, ' + primerNombre + '. Cuando le llegue tu comprobante, el complejo confirma la seña.'
+           : 'Te esperamos, ' + primerNombre + '. Ya le avisamos al complejo.'"></p>
 
       <dl class="mt-6 divide-y divide-marca-claro/10 rounded-3xl bg-marca-claro/5 px-4 text-left text-sm ring-1 ring-inset ring-marca-claro/10">
         <div class="flex justify-between gap-3 py-3">
@@ -482,8 +583,9 @@
           <dd class="font-semibold" x-text="pedido?.rango"></dd>
         </div>
         <div class="flex justify-between gap-3 py-3">
-          <dt class="text-marca-claro/60">Seña pagada</dt>
-          <dd class="font-semibold text-libre" x-text="pedido ? pedido.sena + ' · Mercado Pago' : ''"></dd>
+          <dt class="text-marca-claro/60">Seña</dt>
+          <dd class="text-right font-semibold" :class="reserva && reserva.senaPagada ? 'text-libre' : 'text-fijo'"
+              x-text="!pedido ? '' : (reserva && reserva.senaPagada ? pedido.sena + ' · Mercado Pago' : pedido.sena + ' · pendiente')"></dd>
         </div>
         <div class="flex justify-between gap-3 py-3">
           <dt class="text-marca-claro/60">A pagar en el complejo</dt>
@@ -562,7 +664,8 @@
 
       <ul x-show="estadoMisReservas === 'listo' && misReservas.length" class="mt-5 space-y-3">
         <template x-for="item in misReservas" :key="item.reserva.id">
-          <li class="flex items-center gap-3 rounded-3xl bg-marca-claro/5 p-3 ring-1 ring-inset ring-marca-claro/10">
+          <li class="rounded-3xl bg-marca-claro/5 p-3 ring-1 ring-inset ring-marca-claro/10">
+           <div class="flex items-center gap-3">
             <div class="flex h-16 w-16 shrink-0 flex-col items-center justify-center rounded-2xl bg-marca text-marca-oscuro">
               <span class="text-[0.65rem] font-bold uppercase tracking-wider" x-text="item.etiquetaDia"></span>
               <span class="font-titulo text-3xl font-extrabold leading-none" x-text="item.numeroDia"></span>
@@ -580,6 +683,25 @@
                 <path d="M8 2v4M16 2v4M21 13V6a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h8M3 10h18M16 19h6M19 16v6"/>
               </svg>
             </button>
+           </div>
+            <!-- Acciones: pagar la seña pendiente y cancelar (íconos dibujados, por el x-for) -->
+            <div x-show="!item.reserva.senaPagada || item.cancelable" class="mt-3 flex gap-2 border-t border-marca-claro/10 pt-3">
+              <button type="button" x-show="!item.reserva.senaPagada" @click="abrirSena(item.reserva)"
+                      class="inline-flex h-11 flex-1 items-center justify-center gap-1.5 rounded-xl bg-fijo/15 text-sm font-semibold text-fijo transition hover:bg-fijo/25 active:scale-[0.98]">
+                <svg viewBox="0 0 24 24" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M19 7V4a1 1 0 0 0-1-1H5a2 2 0 0 0 0 4h15a1 1 0 0 1 1 1v4h-3a2 2 0 0 0 0 4h3a1 1 0 0 0 1-1v-2a1 1 0 0 0-1-1"/><path d="M3 5v14a2 2 0 0 0 2 2h15a1 1 0 0 0 1-1v-4"/>
+                </svg>
+                Pagar seña
+              </button>
+              <button type="button" x-show="item.cancelable" @click="pedirCancelacion(item)"
+                      class="inline-flex h-11 items-center justify-center gap-1.5 rounded-xl px-4 text-sm font-semibold text-alerta ring-1 ring-inset ring-alerta/30 transition hover:bg-alerta/10 active:scale-[0.98]"
+                      :class="item.reserva.senaPagada && 'flex-1'">
+                <svg viewBox="0 0 24 24" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <circle cx="12" cy="12" r="10"/><path d="m15 9-6 6M9 9l6 6"/>
+                </svg>
+                Cancelar
+              </button>
+            </div>
           </li>
         </template>
       </ul>
@@ -597,11 +719,77 @@
         </button>
       </div>
 
-      <p class="mt-5 text-center text-xs text-marca-claro/45">Sin cancelación gratuita. Para cualquier cambio:</p>
+      <p class="mt-5 text-center text-xs text-marca-claro/45">Sin cancelación gratuita. Para cambiar el horario:</p>
       <a :href="enlaceWhatsapp" target="_blank" rel="noopener"
          class="mx-auto mt-1 flex h-11 w-fit items-center gap-2 rounded-full px-4 text-sm font-semibold text-libre transition hover:bg-libre/10">
         <i data-lucide="message-circle" class="h-4 w-4"></i>Escribile al complejo
       </a>
+    </section>
+  </div>
+
+  <!-- ============ ¿Cancelar el turno? (encima de Mis reservas) ============ -->
+  <!-- Antes de confirmar se muestra lo que pierde: lo calcula el Store (impactoCancelacion) -->
+  <div x-cloak x-show="cancelacion" class="fixed inset-0 z-[60] flex items-end justify-center sm:items-center"
+       role="alertdialog" aria-modal="true" aria-labelledby="cancelar-titulo">
+    <div x-show="cancelacion" x-transition.opacity.duration.200ms @click="cerrarCancelacion()"
+         class="absolute inset-0 bg-marca-oscuro/80 backdrop-blur-sm"></div>
+
+    <section x-show="cancelacion"
+             x-transition:enter="transition duration-300 ease-out"
+             x-transition:enter-start="translate-y-full sm:translate-y-4 sm:opacity-0"
+             x-transition:enter-end="translate-y-0 sm:opacity-100"
+             class="relative w-full max-w-md rounded-t-[2rem] bg-marca-oscuro px-5 pb-[max(1.5rem,env(safe-area-inset-bottom))] pt-6 ring-1 ring-marca-claro/15 sm:rounded-[2rem]">
+      <span class="grid h-12 w-12 place-items-center rounded-2xl bg-alerta/15 text-alerta">
+        <i data-lucide="calendar-x" class="h-6 w-6"></i>
+      </span>
+      <h2 id="cancelar-titulo" class="mt-4 font-titulo text-3xl font-extrabold uppercase leading-none">¿Cancelar este turno?</h2>
+      <p class="mt-2 text-sm text-marca-claro/70 first-letter:uppercase"
+         x-text="cancelacion ? cancelacion.item.cancha + ' · ' + cancelacion.item.dia + ' · ' + cancelacion.item.rango : ''"></p>
+
+      <!-- Consultando lo que pierde -->
+      <div x-show="cancelacion && cancelacion.estado === 'cargando'" class="mt-4 animate-pulse space-y-2" aria-busy="true">
+        <div class="h-12 rounded-2xl bg-marca-claro/5"></div>
+        <div class="h-12 rounded-2xl bg-marca-claro/5"></div>
+      </div>
+
+      <!-- No se pudo consultar -->
+      <div x-show="cancelacion && cancelacion.estado === 'error'" class="mt-4 rounded-2xl bg-marca-claro/5 p-4 text-center">
+        <p class="text-sm font-semibold">No pudimos consultar tu reserva.</p>
+        <button type="button" @click="reintentarCancelacion()"
+                class="mt-3 inline-flex h-11 items-center gap-2 rounded-xl bg-marca-claro/10 px-4 text-sm font-semibold transition hover:bg-marca-claro/15">
+          <i data-lucide="rotate-cw" class="h-4 w-4"></i>Reintentar
+        </button>
+      </div>
+
+      <!-- Lo que pierde -->
+      <ul x-show="textosCancelacion" class="mt-4 space-y-2 text-sm">
+        <li class="flex items-start gap-3 rounded-2xl p-3 ring-1 ring-inset"
+            :class="textosCancelacion?.senaPierde ? 'bg-alerta/10 ring-alerta/30' : 'bg-marca-claro/5 ring-marca-claro/10'">
+          <i data-lucide="wallet" class="mt-0.5 h-5 w-5 shrink-0" :class="textosCancelacion?.senaPierde ? 'text-alerta' : 'text-marca-claro/60'"></i>
+          <span class="font-semibold" x-text="textosCancelacion?.sena"></span>
+        </li>
+        <li class="flex items-start gap-3 rounded-2xl bg-fijo/10 p-3 ring-1 ring-inset ring-fijo/30">
+          <i data-lucide="trending-down" class="mt-0.5 h-5 w-5 shrink-0 text-fijo"></i>
+          <span class="font-semibold" x-text="textosCancelacion?.puntos"></span>
+        </li>
+      </ul>
+
+      <p x-show="cancelacion && cancelacion.error" x-text="cancelacion?.error"
+         class="mt-3 rounded-2xl bg-alerta/10 p-3 text-sm font-semibold text-alerta" role="alert"></p>
+
+      <button type="button" @click="confirmarCancelacion()"
+              :disabled="!textosCancelacion || cancelacion?.cancelando"
+              class="mt-5 flex h-14 w-full items-center justify-center gap-2 rounded-2xl bg-alerta font-semibold text-white transition hover:brightness-110 active:scale-[0.98] disabled:opacity-50 disabled:active:scale-100">
+        <span x-show="!cancelacion?.cancelando">Sí, cancelar el turno</span>
+        <span x-show="cancelacion?.cancelando" class="flex items-center gap-2">
+          <span class="h-5 w-5 animate-spin rounded-full border-2 border-white/40 border-t-white" aria-hidden="true"></span>
+          Cancelando…
+        </span>
+      </button>
+      <button type="button" @click="cerrarCancelacion()"
+              class="mt-2 h-12 w-full rounded-xl text-sm font-semibold text-marca-claro/70 transition hover:text-marca-claro">
+        No, me quedo con el turno
+      </button>
     </section>
   </div>
 

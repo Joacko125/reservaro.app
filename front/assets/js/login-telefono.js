@@ -115,9 +115,11 @@ function loginTelefono() {
       this.error = '';
       this.arrancarEsperaReenvio();
       this.$nextTick(() => this.enfocarDigito(0));
-      // Un ratito de espera, como si llegara el mensaje
+      // Un ratito de espera, como si llegara el mensaje.
+      // Con la API el código llega por WhatsApp de verdad y no hay notificación simulada.
       this.notificacion = false;
       clearTimeout(this.temporizadorNotificacion);
+      if (!this.codigoEnviado) return;
       this.temporizadorNotificacion = setTimeout(() => {
         this.notificacion = true;
         this.temporizadorNotificacion = setTimeout(() => { this.notificacion = false; }, 9000);

@@ -18,10 +18,13 @@
 //   ?fallar=todo      → todas las llamadas fallan (para ver los "error")
 //   ?fallar=turnosDelDia,reservasDeUsuario → fallan solo esos métodos
 // Las excepciones sin espera: alCambiar (suscribirse a cambios) y normalizarTelefono (no toca datos).
-const Store = (() => {
+//
+// Este archivo solo arma el Store si RESERVANDO_MODO es 'demo' (modo.js). Con 'api' lo arma store-api.js.
+var Store = RESERVANDO_MODO !== 'demo' ? undefined : (() => {
   const PREFIJO = 'reservando:';
   const CLAVES = {
     reservas: 'reservas',
+    canceladas: 'canceladas',    // reservas que canceló el jugador (sirven para el puntaje)
     fijos: 'fijos',
     marcasFijos: 'marcas-fijos', // asistencia y seña de cada día de un turno fijo
     codigos: 'codigos',          // códigos simulados enviados por "WhatsApp"
@@ -34,7 +37,10 @@ const Store = (() => {
   const HASTA = COMPLEJO.horario.hasta; // 24: el último turno es de 23 a 00
   const AMBITOS = ['jugador', 'panel'];
   const ORIGENES = ['web', 'manual'];
-  const MEDIOS_SENA = ['mercadopago', 'efectivo'];
+  const MEDIOS_SENA = ['mercadopago', 'transferencia', 'efectivo'];
+  // A DEFINIR (tarea del viernes, puntaje): depende de la anticipación y de si es reincidente.
+  // Por ahora toda cancelación baja lo mismo.
+  const PUNTOS_POR_CANCELAR = 15;
   const oyentes = [];
 
   // ---------- localStorage ----------
@@ -309,7 +315,8 @@ const Store = (() => {
     },
 
     // datos = { canchaId, fecha, hora, horas = 1, nombre, telefono, origen = 'web', medioSena? }
-    // Desde la web la seña se da por pagada con Mercado Pago, salvo que se pase otro medioSena (o null).
+    // medioSena null = seña pendiente. Así entra la reserva web mientras la seña sea por transferencia:
+    // el dueño la marca como recibida cuando le llega el comprobante (marcarSenaRecibida).
     // En Django: esto es el POST de la vista de reservas
     reservar(datos = {}) {
       const cancha = buscarCancha(datos.canchaId);
@@ -341,7 +348,7 @@ const Store = (() => {
       const telefono = normalizarTelefono(datos.telefono);
       if (!telefono) return fallo('El teléfono no es válido.');
 
-      const medioSena = 'medioSena' in datos ? datos.medioSena : (origen === 'web' ? 'mercadopago' : null);
+      const medioSena = 'medioSena' in datos ? datos.medioSena : null;
       if (medioSena !== null && !MEDIOS_SENA.includes(medioSena)) return fallo('El medio de pago de la seña no es válido.');
 
       const choque = api.reservasDelDia(datos.fecha)
@@ -401,11 +408,48 @@ const Store = (() => {
       return actualizarReserva(reservaId, { asistencia: estado });
     },
 
-    marcarSenaEfectivo(reservaId) {
+    // medio: 'transferencia' | 'efectivo'. Lo marca el dueño cuando le llega la plata.
+    // En Django: POST a la vista que registra la seña
+    marcarSenaRecibida(reservaId, medio) {
+      if (!['transferencia', 'efectivo'].includes(medio)) return fallo('El medio de pago de la seña no es válido.');
       const reserva = buscarReserva(reservaId);
       if (!reserva) return fallo('No encontramos esa reserva.');
       if (reserva.senaPagada) return fallo('La seña ya está pagada.');
-      return actualizarReserva(reservaId, { senaPagada: true, medioSena: 'efectivo' });
+      return actualizarReserva(reservaId, { senaPagada: true, medioSena: medio });
+    },
+
+    marcarSenaEfectivo(reservaId) {
+      return api.marcarSenaRecibida(reservaId, 'efectivo');
+    },
+
+    // Lo que pierde el jugador si cancela. Se muestra ANTES de confirmar.
+    // → { ok, senaSeDevuelve, senaPagada, sena, puntos }
+    // En Django: GET a la vista de cancelación (las reglas las tiene el servidor)
+    impactoCancelacion(reservaId) {
+      const reserva = buscarReserva(reservaId);
+      if (!reserva || reserva.origen === 'fijo') return fallo('No encontramos esa reserva.');
+      return {
+        ok: true,
+        senaSeDevuelve: Boolean(COMPLEJO.cancelacionGratuita),
+        senaPagada: reserva.senaPagada,
+        sena: reserva.sena,
+        puntos: PUNTOS_POR_CANCELAR,
+      };
+    },
+
+    // El jugador cancela una reserva suya que todavía no empezó. El turno vuelve a quedar libre.
+    // En Django: POST a la vista de cancelación
+    cancelarReserva(reservaId, telefono) {
+      const reservas = reservasGuardadas();
+      const reserva = reservas.find((una) => una.id === reservaId);
+      if (!reserva) return fallo('No encontramos esa reserva. Puede que ya esté cancelada.');
+      if (reserva.telefono !== normalizarTelefono(telefono)) return fallo('Esa reserva no es tuya.');
+      if (yaEmpezo(reserva.fecha, reserva.hora)) return fallo('Ese turno ya empezó: no se puede cancelar.');
+      guardar(CLAVES.reservas, reservas.filter((una) => una.id !== reservaId));
+      const cancelada = Object.assign({}, reserva, { canceladaEn: new Date().toISOString(), puntos: PUNTOS_POR_CANCELAR });
+      guardar(CLAVES.canceladas, leer(CLAVES.canceladas, []).concat(cancelada));
+      avisar('reserva-cancelada', cancelada);
+      return { ok: true, reserva: cancelada };
     },
 
     // ----- Turnos fijos -----
