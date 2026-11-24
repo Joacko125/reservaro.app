@@ -26,6 +26,9 @@
 //   POST /api/panel/promos     { canchaId, fecha, hora, precio } → { ok, promo }
 //   DELETE /api/panel/promos/<id>              → { ok, promo }
 //   GET  /api/panel/fijos                      → { ok, fijos }
+//   POST /api/panel/fijos/fechas/<fijo-ID-AAAA-MM-DD>/cancelar { avisoEn } → { ok, reserva, cancelacion }
+//        cancelacion: { fecha, avisoEn, registradaEn, anticipacionHoras }  (la usa el puntaje)
+//   DELETE /api/panel/fijos/<id>/cancelaciones/<AAAA-MM-DD> → { ok }  (deshacer)
 //   POST /api/panel/fijos                      → { ok, turnoFijo }
 //   DELETE /api/panel/fijos/<id>               → { ok, turnoFijo }
 //   POST /api/auth/codigo     { telefono }           → { ok }       (manda el código por WhatsApp)
@@ -194,6 +197,14 @@ var Store = RESERVANDO_MODO !== 'api' ? Store : (() => {
     },
     async ponerEnPromo(datos = {}) { return api('POST', '/panel/promos', datos); },
     async quitarPromo(promoId) { return api('DELETE', `/panel/promos/${enLaRuta(promoId)}`); },
+
+    // ----- Turnos fijos: cancelar una fecha -----
+    async cancelarFechaFijo(reservaId, avisoEn) {
+      return api('POST', `/panel/fijos/fechas/${enLaRuta(reservaId)}/cancelar`, { avisoEn: avisoEn || null });
+    },
+    async restaurarFechaFijo(turnoFijoId, fecha) {
+      return api('DELETE', `/panel/fijos/${enLaRuta(turnoFijoId)}/cancelaciones/${enLaRuta(fecha)}`);
+    },
 
     // ----- Turnos fijos -----
     async turnosFijos() {

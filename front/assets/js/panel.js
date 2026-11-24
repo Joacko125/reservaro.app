@@ -54,6 +54,8 @@ function panel() {
     senas: null,         // hoja de señas pendientes: { estado, lista, liberando: id | null }
     pendientes: [],      // señas pendientes de todos los días (para el contador del resumen)
     ahoraMs: Date.now(), // para "hace 12 min": se actualiza cada minuto
+    calendario: null,    // { mes: 'AAAA-MM', promos: { 'AAAA-MM-DD': true } }
+    cancelaFijo: null,   // { reservaId, modo: null | 'elegir', cuando: 'AAAA-MM-DDTHH:MM', error, guardando }
     logoOk: false,
     toque: null,
     _timerAviso: null,
@@ -153,6 +155,8 @@ function panel() {
       this.formFijo = null;
       this.formPromo = null;
       this.senas = null;
+      this.calendario = null;
+      this.cancelaFijo = null;
       this.detalle = null;
       this.menu = false;
       this.config = false;
@@ -160,7 +164,7 @@ function panel() {
     },
 
     get hayModal() {
-      return Boolean(this.form || this.formFijo || this.formPromo || this.senas || this.detalle || this.config || this.confirmarReinicio);
+      return Boolean(this.form || this.formFijo || this.formPromo || this.senas || this.calendario || this.detalle || this.config || this.confirmarReinicio);
     },
 
     // --- Menú ---
@@ -898,6 +902,184 @@ function panel() {
     },
 
     // --- Navegación de días ---
+
+    // ¿La fecha elegida está fuera de la tira de 14 días? (se llegó con el calendario o con las flechas)
+    get fechaFueraDeLaTira() {
+      return Boolean(this.fecha) && !this.dias.includes(this.fecha);
+    },
+
+    // --- Calendario mensual: saltar a cualquier fecha hasta un año adelante ---
+
+    get ultimaFechaCalendario() {
+      return sumarDias(this.hoy, 365);
+    },
+
+    async abrirCalendario() {
+      this.calendario = { mes: this.fecha.slice(0, 7), promos: {} };
+      this.iconos();
+      // Puntito lima en los días con promos del dueño. Si falla, el calendario anda igual.
+      try {
+        const promos = await Store.promos();
+        if (this.calendario) this.calendario.promos = Object.fromEntries(promos.map((p) => [p.fecha, true]));
+      } catch (error) { /* sin puntitos */ }
+    },
+
+    cambiarMes(n) {
+      const [anio, mes] = this.calendario.mes.split('-').map(Number);
+      const nuevo = new Date(Date.UTC(anio, mes - 1 + n, 1)).toISOString().slice(0, 7);
+      if (nuevo < this.hoy.slice(0, 7) || nuevo > this.ultimaFechaCalendario.slice(0, 7)) return;
+      this.calendario.mes = nuevo;
+    },
+
+    get puedeMesAnterior() {
+      return this.calendario && this.calendario.mes > this.hoy.slice(0, 7);
+    },
+
+    get puedeMesSiguiente() {
+      return this.calendario && this.calendario.mes < this.ultimaFechaCalendario.slice(0, 7);
+    },
+
+    get tituloMes() {
+      if (!this.calendario) return '';
+      const [anio, mes] = this.calendario.mes.split('-').map(Number);
+      const nombres = ['Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio', 'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'];
+      return nombres[mes - 1] + ' ' + anio;
+    },
+
+    // Semanas del mes, de lunes a domingo. Cada día: { fecha, numero, enMes, deshabilitado, ... }
+    get semanasCalendario() {
+      if (!this.calendario) return [];
+      const primero = this.calendario.mes + '-01';
+      const diaSemana = new Date(primero + 'T12:00:00Z').getUTCDay(); // 0 = domingo
+      let fecha = sumarDias(primero, -((diaSemana + 6) % 7));      // el lunes de esa semana
+      const semanas = [];
+      do {
+        const semana = [];
+        for (let i = 0; i < 7; i++) {
+          semana.push({
+            fecha,
+            numero: Number(fecha.slice(8)),
+            enMes: fecha.slice(0, 7) === this.calendario.mes,
+            deshabilitado: fecha > this.ultimaFechaCalendario,
+            pasado: fecha < this.hoy,
+            esHoy: fecha === this.hoy,
+            elegido: fecha === this.fecha,
+            promo: Boolean(this.calendario.promos[fecha]),
+          });
+          fecha = sumarDias(fecha, 1);
+        }
+        semanas.push(semana);
+      } while (fecha.slice(0, 7) === this.calendario.mes);
+      return semanas;
+    },
+
+    elegirDelCalendario(dia) {
+      if (dia.deshabilitado) return;
+      this.calendario = null;
+      this.vista = 'agenda';
+      this.irA(dia.fecha);
+    },
+
+    irAHoyDesdeCalendario() {
+      this.calendario = null;
+      this.irA(this.hoy);
+    },
+
+    // --- Turno fijo: "Canceló esta fecha" ---
+
+    // Fecha y hora de ahora (Argentina) en el formato del <input type="datetime-local">
+    ahoraParaInput() {
+      const partes = {};
+      new Intl.DateTimeFormat('en-CA', {
+        timeZone: 'America/Argentina/Buenos_Aires', year: 'numeric', month: '2-digit', day: '2-digit',
+        hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
+      }).formatToParts(new Date()).forEach(({ type, value }) => { partes[type] = value; });
+      return `${partes.year}-${partes.month}-${partes.day}T${partes.hour}:${partes.minute}`;
+    },
+
+    pedirCancelarFijo() {
+      this.cancelaFijo = { reservaId: this.detalle.reserva.id, modo: null, cuando: this.ahoraParaInput(), error: '', guardando: false };
+      this.iconos();
+    },
+
+    // "Avisó con 2 días y 3 h de anticipación" / "Avisó 30 min tarde"
+    textoAnticipacion(reserva, avisoEn) {
+      const inicio = new Date(`${reserva.fecha}T${String(reserva.hora).padStart(2, '0')}:00:00-03:00`);
+      const minutos = Math.round((inicio - avisoEn) / 60000);
+      const partes = (total) => {
+        const dias = Math.floor(total / 1440), horas = Math.floor((total % 1440) / 60), mins = total % 60;
+        if (dias) return dias + (dias === 1 ? ' día' : ' días') + (horas ? ' y ' + horas + ' h' : '');
+        if (horas) return horas + ' h' + (mins ? ' ' + mins + ' min' : '');
+        return mins + ' min';
+      };
+      if (minutos < 0) return 'Avisó ' + partes(-minutos) + ' tarde (el turno ya había empezado)';
+      return 'Avisó con ' + partes(minutos) + ' de anticipación';
+    },
+
+    // El <input> se lee como hora de Argentina
+    get avisoElegido() {
+      const c = this.cancelaFijo;
+      if (!c) return null;
+      if (c.modo !== 'elegir') return new Date();
+      const fecha = new Date(c.cuando + ':00-03:00');
+      return Number.isNaN(fecha.getTime()) ? null : fecha;
+    },
+
+    async confirmarCancelarFijo() {
+      const c = this.cancelaFijo;
+      if (!c || c.guardando) return;
+      const aviso = this.avisoElegido;
+      if (!aviso) {
+        c.error = 'Elegí la fecha y la hora en que te avisó.';
+        return;
+      }
+      c.guardando = true;
+      c.error = '';
+      let resultado;
+      try {
+        resultado = await Store.cancelarFechaFijo(c.reservaId, c.modo === 'elegir' ? aviso.toISOString() : null);
+      } catch (error) {
+        c.guardando = false;
+        c.error = 'No se pudo guardar: revisá la conexión y probá de nuevo.';
+        return;
+      }
+      c.guardando = false;
+      if (!resultado.ok) {
+        c.error = resultado.error;
+        return;
+      }
+      const r = resultado.reserva;
+      const cancha = this.canchas.find((x) => x.id === r.canchaId) || {};
+      this.cancelaFijo = null;
+      this.detalle = null;
+      await this.recargar({ silencioso: true });
+      this.mostrarAviso({
+        tipo: 'cancelada',
+        titulo: (r.nombre || 'El fijo').trim().split(' ')[0] + ' no viene — ' + (cancha.tipo || '') + ', ' + r.hora + ' hs',
+        texto: this.textoAnticipacion(r, new Date(resultado.cancelacion.avisoEn)) + ' · el turno quedó libre',
+        accion: this.sePuedePromocionar(r)
+          ? { texto: '¿Lo ponés en promo?', hacer: () => this.abrirPromo(cancha, r.fecha, r.hora) }
+          : null,
+        duracion: 15000,
+      });
+    },
+
+    // Fechas canceladas que todavía no pasaron, para mostrarlas (y poder deshacerlas) en la lista de fijos
+    cancelacionesProximas(fijo) {
+      return (fijo.cancelaciones || []).filter((c) => c.fecha >= this.hoy).sort((a, b) => a.fecha.localeCompare(b.fecha));
+    },
+
+    async restaurarFecha(fijo, fecha) {
+      let resultado;
+      try {
+        resultado = await Store.restaurarFechaFijo(fijo.id, fecha);
+      } catch (error) {
+        return this.avisarError('No se pudo deshacer');
+      }
+      if (!resultado.ok) return this.mostrarAviso({ tipo: 'error', titulo: 'No se pudo deshacer', texto: resultado.error });
+      await this.recargar({ silencioso: true });
+      this.mostrarAviso({ tipo: 'ok', titulo: 'Listo, el fijo vuelve a ese día', texto: fijo.responsable + ' · ' + Fmt.dia(fecha) });
+    },
 
     moverDia(n) {
       this.irA(sumarDias(this.fecha, n));

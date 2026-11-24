@@ -192,10 +192,17 @@ var Store = RESERVANDO_MODO !== 'demo' ? undefined : (() => {
     return leer(CLAVES.fijos, []);
   }
 
-  // Los turnos fijos valen todas las semanas a partir del día en que se cargan
+  // Los turnos fijos valen todas las semanas a partir del día en que se cargan,
+  // salvo las fechas puntuales que canceló el jugador (fijo.cancelaciones)
   function fijosDelDia(fijos, fecha) {
     const diaSemana = diaDeLaSemana(fecha);
-    return fijos.filter((fijo) => fijo.diaSemana === diaSemana && fecha >= fijo.desde);
+    return fijos.filter((fijo) => fijo.diaSemana === diaSemana && fecha >= fijo.desde
+      && !(fijo.cancelaciones || []).some((c) => c.fecha === fecha));
+  }
+
+  // Momento en que empieza un turno (hora de Argentina, que no tiene horario de verano)
+  function inicioDelTurno(fecha, hora) {
+    return new Date(`${fecha}T${String(hora).padStart(2, '0')}:00:00-03:00`);
   }
 
   // Lo que ocupa cada cancha ese día: reservas y turnos fijos
@@ -573,6 +580,50 @@ var Store = RESERVANDO_MODO !== 'demo' ? undefined : (() => {
       guardar(CLAVES.canceladas, leer(CLAVES.canceladas, []).concat(cancelada));
       avisar('reserva-cancelada', cancelada);
       return { ok: true, reserva: cancelada };
+    },
+
+    // ----- Turnos fijos: cancelar una fecha -----
+
+    // El responsable de un fijo avisa que una semana no viene. El turno de ESA fecha queda libre;
+    // las otras semanas siguen igual. avisoEn = cuándo avisó (ISO); sin avisoEn es "ahora".
+    // Se guarda la anticipación en horas: la usa el puntaje de clientes (negativa = avisó tarde).
+    // En Django: POST a la vista que cancela una fecha de un turno fijo
+    cancelarFechaFijo(reservaId, avisoEn) {
+      const reserva = typeof reservaId === 'string' && reservaId.startsWith('fijo-') ? buscarReservaDeFijo(reservaId) : null;
+      if (!reserva) return fallo('No encontramos ese turno fijo en esa fecha.');
+      const aviso = avisoEn ? new Date(avisoEn) : new Date();
+      if (Number.isNaN(aviso.getTime())) return fallo('La fecha del aviso no es válida.');
+      if (aviso.getTime() > Date.now() + 60000) return fallo('El aviso no puede ser en el futuro.');
+      const inicio = inicioDelTurno(reserva.fecha, reserva.hora);
+      const anticipacionHoras = Math.round(((inicio - aviso) / 3600000) * 10) / 10;
+
+      const fijos = fijosGuardados();
+      const fijo = fijos.find((uno) => uno.id === reserva.turnoFijoId);
+      const cancelacion = {
+        fecha: reserva.fecha,
+        avisoEn: aviso.toISOString(),
+        registradaEn: new Date().toISOString(),
+        anticipacionHoras,
+      };
+      fijo.cancelaciones = (fijo.cancelaciones || []).concat(cancelacion);
+      guardar(CLAVES.fijos, fijos);
+      const datos = Object.assign({}, reserva, { cancelacion });
+      avisar('fijo-cancelado', datos);
+      return { ok: true, reserva: datos, cancelacion };
+    },
+
+    // Por si el dueño se equivocó: la fecha vuelve a estar ocupada por el fijo (si nadie la reservó mientras tanto)
+    // En Django: DELETE a la misma vista
+    restaurarFechaFijo(turnoFijoId, fecha) {
+      const fijos = fijosGuardados();
+      const fijo = fijos.find((uno) => uno.id === turnoFijoId);
+      if (!fijo || !(fijo.cancelaciones || []).some((c) => c.fecha === fecha)) return fallo('Esa fecha no estaba cancelada.');
+      const ocupado = reservasGuardadas().some((r) => r.fecha === fecha && r.canchaId === fijo.canchaId && seSuperponen(r, fijo));
+      if (ocupado) return fallo('Ese horario ya lo reservó otra persona.');
+      fijo.cancelaciones = fijo.cancelaciones.filter((c) => c.fecha !== fecha);
+      guardar(CLAVES.fijos, fijos);
+      avisar('fijo-restaurado', { turnoFijoId, fecha });
+      return { ok: true };
     },
 
     // ----- Turnos fijos -----

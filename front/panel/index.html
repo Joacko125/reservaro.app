@@ -266,6 +266,18 @@
 
         <!-- Tira de días -->
         <div data-sin-deslizar class="-mx-3 mt-4 flex gap-2 overflow-x-auto px-3 pb-1 [scrollbar-width:none] sm:mx-0 sm:px-0">
+          <!-- Calendario mensual: cualquier fecha hasta un año adelante -->
+          <button type="button" @click="abrirCalendario()" aria-label="Abrir el calendario"
+                  class="flex h-14 min-w-[3.5rem] shrink-0 flex-col items-center justify-center rounded-2xl bg-marca px-3 text-marca-oscuro shadow-sm transition hover:brightness-105 active:scale-95">
+            <i data-lucide="calendar-days" class="h-5 w-5"></i>
+            <span class="text-[11px] font-bold">Mes</span>
+          </button>
+          <!-- La fecha elegida desde el calendario, si no está entre los próximos 14 días -->
+          <button type="button" x-show="fechaFueraDeLaTira" data-dia-activo="true"
+                  class="flex h-14 min-w-[3.5rem] shrink-0 flex-col items-center justify-center rounded-2xl bg-marca-oscuro px-3 text-sm font-semibold text-white shadow-md">
+            <span class="text-[11px] font-medium opacity-70" x-text="fecha ? Fmt.dia(fecha).split(' ')[0] : ''"></span>
+            <span class="tabular-nums" x-text="fecha ? Number(fecha.slice(8)) + '/' + Number(fecha.slice(5, 7)) : ''"></span>
+          </button>
           <template x-for="d in dias" :key="d">
             <button type="button" @click="irA(d)" :data-dia-activo="d === fecha"
                     :class="d === fecha ? 'bg-marca-oscuro text-white shadow-md' : 'bg-marca-oscuro/5 text-marca-oscuro/65 hover:bg-marca-oscuro/10'"
@@ -475,6 +487,13 @@
                             <span x-text="Fmt.rango(f.hora, f.horas)"></span> ·
                             <a :href="'tel:+549' + f.telefono" class="hover:underline" x-text="Fmt.telefono(f.telefono)"></a>
                           </p>
+                          <!-- Fechas que avisó que no viene (todavía no pasaron) -->
+                          <template x-for="c in cancelacionesProximas(f)" :key="c.fecha">
+                            <p class="mt-1 flex items-center gap-1.5 text-xs">
+                              <span class="rounded-full bg-alerta/15 px-2 py-0.5 font-semibold text-alerta" x-text="'No viene el ' + Fmt.dia(c.fecha)"></span>
+                              <button type="button" @click="restaurarFecha(f, c.fecha)" class="font-semibold text-marca-oscuro/55 underline-offset-2 hover:underline">Deshacer</button>
+                            </p>
+                          </template>
                         </div>
                         <button type="button" @click="borrarFijo(f)"
                                 :aria-label="borrando === f.id ? 'Confirmar borrado' : 'Borrar turno fijo de ' + f.responsable"
@@ -627,6 +646,59 @@
           </button>
         </div>
       </form>
+    </div>
+  </template>
+
+  <!-- Calendario mensual -->
+  <template x-if="calendario">
+    <div class="fixed inset-0 z-40 flex items-end justify-center sm:items-center sm:p-6" role="dialog" aria-modal="true" aria-labelledby="titulo-calendario">
+      <div class="absolute inset-0 bg-marca-oscuro/60 backdrop-blur-sm" @click="calendario = null"></div>
+
+      <section class="hoja-sube relative w-full rounded-t-[2rem] bg-white p-5 pb-[max(1.25rem,env(safe-area-inset-bottom))] shadow-2xl sm:max-w-md sm:rounded-[2rem] sm:p-7">
+        <div class="mx-auto mb-4 h-1.5 w-10 rounded-full bg-marca-oscuro/10 sm:hidden"></div>
+        <div class="flex items-center gap-2">
+          <button type="button" @click="cambiarMes(-1)" :disabled="!puedeMesAnterior" aria-label="Mes anterior"
+                  class="grid h-11 w-11 shrink-0 place-items-center rounded-full bg-marca-oscuro/5 transition hover:bg-marca-oscuro/10 disabled:opacity-30">
+            <i data-lucide="chevron-left" class="h-5 w-5"></i>
+          </button>
+          <h2 id="titulo-calendario" class="flex-1 text-center font-titulo text-2xl font-extrabold tracking-tight" x-text="tituloMes"></h2>
+          <button type="button" @click="cambiarMes(1)" :disabled="!puedeMesSiguiente" aria-label="Mes siguiente"
+                  class="grid h-11 w-11 shrink-0 place-items-center rounded-full bg-marca-oscuro/5 transition hover:bg-marca-oscuro/10 disabled:opacity-30">
+            <i data-lucide="chevron-right" class="h-5 w-5"></i>
+          </button>
+        </div>
+
+        <div class="mt-4 grid grid-cols-7 text-center text-[11px] font-semibold uppercase tracking-wider text-marca-oscuro/40">
+          <span>Lu</span><span>Ma</span><span>Mi</span><span>Ju</span><span>Vi</span><span>Sá</span><span>Do</span>
+        </div>
+        <div class="mt-1 space-y-1">
+          <template x-for="semana in semanasCalendario" :key="semana[0].fecha">
+            <div class="grid grid-cols-7 gap-1">
+              <template x-for="dia in semana" :key="dia.fecha">
+                <button type="button" @click="elegirDelCalendario(dia)" :disabled="dia.deshabilitado"
+                        :aria-label="Fmt.diaLargo(dia.fecha)" :aria-current="dia.elegido ? 'date' : null"
+                        class="relative grid aspect-square place-items-center rounded-xl text-sm font-semibold tabular-nums transition disabled:cursor-default disabled:opacity-20"
+                        :class="{
+                          'bg-marca-oscuro text-white shadow-md': dia.elegido,
+                          'ring-2 ring-inset ring-club text-club': dia.esHoy && !dia.elegido,
+                          'hover:bg-marca-oscuro/5': !dia.elegido && !dia.deshabilitado,
+                          'text-marca-oscuro/25': !dia.enMes && !dia.elegido,
+                          'text-marca-oscuro/40': dia.enMes && dia.pasado && !dia.elegido && !dia.esHoy,
+                        }">
+                  <span x-text="dia.numero"></span>
+                  <span x-show="dia.promo" class="absolute bottom-1.5 h-1.5 w-1.5 rounded-full bg-marca ring-1 ring-marca-oscuro/20"></span>
+                </button>
+              </template>
+            </div>
+          </template>
+        </div>
+
+        <div class="mt-4 flex items-center justify-between border-t border-marca-oscuro/5 pt-4 text-xs text-marca-oscuro/55">
+          <span class="flex items-center gap-1.5"><span class="h-2 w-2 rounded-full bg-marca ring-1 ring-marca-oscuro/20"></span>Hay promo</span>
+          <button type="button" @click="irAHoyDesdeCalendario()"
+                  class="h-10 rounded-xl bg-marca-oscuro/5 px-4 text-sm font-semibold text-marca-oscuro transition hover:bg-marca-oscuro/10">Ir a hoy</button>
+        </div>
+      </section>
     </div>
   </template>
 
@@ -1016,6 +1088,42 @@
             <i data-lucide="x" class="h-5 w-5"></i>
             No vino
           </button>
+        </div>
+
+        <!-- Turno fijo: el responsable avisa que esta semana no viene -->
+        <div x-show="detalle.reserva.origen === 'fijo'" class="mt-5">
+          <button type="button" x-show="!cancelaFijo || cancelaFijo.reservaId !== detalle.reserva.id" @click="pedirCancelarFijo()"
+                  class="flex h-14 w-full items-center justify-center gap-2 rounded-2xl font-semibold text-alerta ring-1 ring-inset ring-alerta/30 transition hover:bg-alerta/5 active:scale-[0.98]">
+            <i data-lucide="calendar-x" class="h-5 w-5"></i>
+            Canceló esta fecha
+          </button>
+
+          <div x-show="cancelaFijo && cancelaFijo.reservaId === detalle.reserva.id" class="rounded-2xl bg-alerta/5 p-4 ring-1 ring-inset ring-alerta/20">
+            <p class="font-semibold">¿Cuándo te avisó?</p>
+            <p class="mt-0.5 text-xs text-marca-oscuro/55">Solo se libera esta fecha; las otras semanas siguen igual. La anticipación se usa para el puntaje.</p>
+            <div class="mt-3 grid grid-cols-2 gap-2">
+              <button type="button" @click="cancelaFijo.modo = null; cancelaFijo.error = ''"
+                      :class="cancelaFijo?.modo !== 'elegir' ? 'bg-marca-oscuro text-white' : 'bg-white text-marca-oscuro/70 ring-1 ring-marca-oscuro/10'"
+                      class="h-12 rounded-xl text-sm font-semibold transition">Ahora</button>
+              <button type="button" @click="cancelaFijo.modo = 'elegir'; cancelaFijo.error = ''"
+                      :class="cancelaFijo?.modo === 'elegir' ? 'bg-marca-oscuro text-white' : 'bg-white text-marca-oscuro/70 ring-1 ring-marca-oscuro/10'"
+                      class="h-12 rounded-xl text-sm font-semibold transition">Elegir fecha y hora</button>
+            </div>
+            <input x-show="cancelaFijo?.modo === 'elegir'" type="datetime-local" :value="cancelaFijo?.cuando"
+                   @input="cancelaFijo.cuando = $event.target.value; cancelaFijo.error = ''" :max="ahoraParaInput()"
+                   class="mt-2 h-12 w-full rounded-xl border-0 bg-white px-3 text-base tabular-nums outline-none ring-2 ring-marca-oscuro/10 focus:ring-club">
+            <p x-show="avisoElegido" class="mt-2 text-sm font-semibold text-marca-oscuro/75"
+               x-text="avisoElegido ? textoAnticipacion(detalle.reserva, avisoElegido) : ''"></p>
+            <p x-show="cancelaFijo?.error" x-text="cancelaFijo?.error" class="mt-2 text-sm font-medium text-alerta" role="alert"></p>
+            <div class="mt-3 flex gap-2">
+              <button type="button" @click="cancelaFijo = null"
+                      class="h-12 flex-1 rounded-xl text-sm font-semibold text-marca-oscuro/60 transition hover:bg-marca-oscuro/5">Volver</button>
+              <button type="button" @click="confirmarCancelarFijo()" :disabled="cancelaFijo?.guardando"
+                      class="h-12 flex-[2] rounded-xl bg-alerta text-sm font-semibold text-white transition hover:brightness-110 disabled:opacity-60">
+                Liberar esta fecha
+              </button>
+            </div>
+          </div>
         </div>
 
         <!-- Seña -->
