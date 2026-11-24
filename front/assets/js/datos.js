@@ -33,6 +33,20 @@ const COMPLEJO = {
   minutosParaSenar: { minimo: 15, maximo: 30 }, // cuánto se guarda un turno sin seña antes de liberarlo
   turnosFijos: 'los carga el dueño',
   cancelacionGratuita: false,
+  // Puntaje de confiabilidad de cada jugador (por teléfono). A CALIBRAR con el dueño en el mes sin cargo.
+  puntaje: {
+    inicial: 100,
+    // Cancelar: puntos según cuántas horas antes avisó. Menos de 6 h: masAlTope.
+    porAnticipacion: [{ desdeHoras: 72, puntos: 5 }, { desdeHoras: 24, puntos: 10 }, { desdeHoras: 6, puntos: 20 }],
+    masAlTope: 30,
+    noVino: 40,                 // no vino y no avisó
+    vino: 3,                    // suma cada vez que el dueño marca "Vino" (tope: inicial)
+    reincidencia: 0.5,          // ×(1 + 0,5 × cancelaciones anteriores en la ventana)
+    ventanaDias: 60,
+    verdeDesde: 70,             // 70 a 100: Al día
+    amarilloDesde: 40,          // 40 a 69: En observación · menos de 40: En riesgo
+    alertaFijo: { avisar: 2, baja: 3 }, // cancelaciones en la ventana de un titular de turno fijo
+  },
   comisionMercadoPago: 'complejo',            // la paga el complejo, no el jugador
   // Promo de lunes a viernes de 13:00 a 18:00 inclusive (último turno en promo: 18 a 19). El precio lo calcula el Store (turnosDelDia y reservar).
   promo: { dias: [1, 2, 3, 4, 5], desde: 13, hasta: 19 },

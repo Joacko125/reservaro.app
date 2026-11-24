@@ -55,7 +55,13 @@ function panel() {
     pendientes: [],      // señas pendientes de todos los días (para el contador del resumen)
     ahoraMs: Date.now(), // para "hace 12 min": se actualiza cada minuto
     calendario: null,    // { mes: 'AAAA-MM', promos: { 'AAAA-MM-DD': true } }
-    cancelaFijo: null,   // { reservaId, modo: null | 'elegir', cuando: 'AAAA-MM-DDTHH:MM', error, guardando }
+    cancelaFijo: null,
+    // Clientes y puntaje
+    clientes: [],
+    estadoClientes: 'cargando', // 'cargando' | 'listo' | 'error'
+    alertas: [],                // se cargan con la agenda (para el número de la pestaña)
+    ficha: null,                // { estado, datos } de un cliente
+    bajaFijo: null,             // id del fijo que espera el segundo toque para darse de baja   // { reservaId, modo: null | 'elegir', cuando: 'AAAA-MM-DDTHH:MM', error, guardando }
     logoOk: false,
     toque: null,
     _timerAviso: null,
@@ -157,6 +163,7 @@ function panel() {
       this.senas = null;
       this.calendario = null;
       this.cancelaFijo = null;
+      this.ficha = null;
       this.detalle = null;
       this.menu = false;
       this.config = false;
@@ -164,7 +171,7 @@ function panel() {
     },
 
     get hayModal() {
-      return Boolean(this.form || this.formFijo || this.formPromo || this.senas || this.calendario || this.detalle || this.config || this.confirmarReinicio);
+      return Boolean(this.form || this.formFijo || this.formPromo || this.senas || this.calendario || this.ficha || this.detalle || this.config || this.confirmarReinicio);
     },
 
     // --- Menú ---
@@ -253,6 +260,8 @@ function panel() {
           Store.turnosFijos(),
           // En Django: esto viene de la vista de señas pendientes del panel.
           Store.senasPendientes(),
+          // En Django: esto viene de la vista de alertas del panel.
+          Store.alertas(),
         ]);
       } catch (error) {
         if (pedido !== this._pedido) return;
@@ -262,7 +271,10 @@ function panel() {
         return;
       }
       if (pedido !== this._pedido) return;
-      const [dias, delDia, reservasDelDia, deHoy, reservasDeHoy, fijos, pendientes] = datos;
+      const [dias, delDia, reservasDelDia, deHoy, reservasDeHoy, fijos, pendientes, alertas] = datos;
+      this.alertas = alertas;
+      if (this.vista === 'clientes') this.cargarClientes({ silencioso: true });
+      if (this.ficha && this.ficha.estado === 'listo') this.verFicha(this.ficha.datos.telefono, { silencioso: true });
       this.pendientes = pendientes;
       this.ahoraMs = Date.now();
       if (this.senas && this.senas.estado === 'listo') this.senas.lista = pendientes;
@@ -899,6 +911,88 @@ function panel() {
 
     textoFijo(f) {
       return this.nombreCancha(f.canchaId) + ' · Todos los ' + PANEL_DIAS_PLURAL[f.diaSemana] + ' · ' + Fmt.rango(f.hora, f.horas);
+    },
+
+    // --- Clientes y puntaje ---
+
+    abrirClientes() {
+      this.vista = 'clientes';
+      this.cargarClientes();
+      this.iconos();
+    },
+
+    async cargarClientes({ silencioso = false } = {}) {
+      if (!silencioso) this.estadoClientes = 'cargando';
+      try {
+        // En Django: esto viene de la vista de clientes del panel.
+        const [clientes, alertas] = await Promise.all([Store.clientes(), Store.alertas()]);
+        this.clientes = clientes;
+        this.alertas = alertas;
+        this.estadoClientes = 'listo';
+      } catch (error) {
+        console.error('panel: no se pudieron cargar los clientes', error);
+        if (!silencioso) this.estadoClientes = 'error';
+      }
+      this.iconos();
+    },
+
+    async verFicha(telefono, { silencioso = false } = {}) {
+      if (!silencioso) this.ficha = { estado: 'cargando', datos: { telefono } };
+      try {
+        const datos = await Store.fichaCliente(telefono);
+        if (!this.ficha) return;
+        if (!datos.ok) {
+          this.ficha = null;
+          return this.mostrarAviso({ tipo: 'error', titulo: 'No se encontró el cliente', texto: datos.error });
+        }
+        this.ficha = { estado: 'listo', datos };
+      } catch (error) {
+        if (this.ficha && !silencioso) this.ficha.estado = 'error';
+      }
+      this.iconos();
+    },
+
+    // Colores del semáforo (los mismos que en la app del jugador)
+    claseSemaforo(color) {
+      return { verde: 'bg-libre text-white', amarillo: 'bg-fijo text-marca-oscuro', rojo: 'bg-alerta text-white' }[color] || 'bg-marca-oscuro/10';
+    },
+
+    // Una línea del historial de la ficha
+    textoEvento(e) {
+      const titulos = {
+        cancelo: 'Canceló desde la app',
+        'cancelo-fijo': 'Canceló su turno fijo',
+        'no-vino': 'No vino y no avisó',
+        vino: 'Vino a jugar',
+      };
+      const cancha = this.canchas.find((c) => c.id === e.canchaId) || {};
+      const turno = (cancha.tipo || '') + ' · ' + Fmt.dia(e.fecha) + ' ' + Fmt.hora(e.hora);
+      let detalle = '';
+      if (e.tipo === 'cancelo' || e.tipo === 'cancelo-fijo') {
+        const h = e.anticipacionHoras;
+        detalle = h < 0 ? 'Avisó tarde' : 'Avisó con ' + (h >= 48 ? Math.round(h / 24) + ' días' : Math.round(h) + ' h');
+      }
+      if (e.multiplicador > 1) detalle += (detalle ? ' · ' : '') + 'reincide ×' + String(e.multiplicador).replace('.', ',');
+      if (e.tipo === 'cancelo-fijo') detalle += (detalle ? ' · ' : '') + 'lo cargó el dueño';
+      return { titulo: titulos[e.tipo], turno, detalle };
+    },
+
+    // Desde una alerta o la ficha. Primer toque: pide confirmar. Segundo: lo borra.
+    async darDeBajaFijo(fijo) {
+      if (this.bajaFijo !== fijo.id) {
+        this.bajaFijo = fijo.id;
+        return;
+      }
+      this.bajaFijo = null;
+      try {
+        // En Django: DELETE a la vista de turnos fijos
+        await Store.borrarTurnoFijo(fijo.id);
+      } catch (error) {
+        return this.avisarError('No se pudo dar de baja el turno fijo');
+      }
+      await this.recargar({ silencioso: true });
+      await this.cargarClientes({ silencioso: true });
+      this.mostrarAviso({ tipo: 'ok', titulo: 'Turno fijo dado de baja', texto: fijo.responsable + ' · ' + this.textoFijo(fijo) + ' · ese horario queda libre' });
     },
 
     // --- Navegación de días ---

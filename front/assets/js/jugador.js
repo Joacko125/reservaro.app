@@ -41,6 +41,7 @@ function jugador() {
     senaDesde: null,     // de dónde se abrió la pantalla de la seña: 'resumen' | 'mis-reservas'
     copiado: '',         // 'alias' | 'cvu': para mostrar "¡Copiado!" un ratito
     cancelacion: null,   // { item, estado: 'cargando' | 'listo' | 'error', impacto, cancelando, error }
+    miEstado: null,      // { puntaje, semaforo: { color, texto }, mensaje } para la tarjeta de "Mis reservas"
     mensaje: '',
     temporizadorMensaje: null,
 
@@ -155,6 +156,10 @@ function jugador() {
       }
       if (!silencioso) this.estadoMisReservas = 'cargando';
       let reservas;
+      // El puntaje va aparte: si falla, las reservas se ven igual (solo falta la tarjeta del semáforo)
+      Store.miEstado(this.usuario.telefono)
+        .then((estado) => { this.miEstado = estado; })
+        .catch(() => { this.miEstado = null; });
       try {
         reservas = await Store.reservasDeUsuario(this.usuario.telefono);
       } catch (error) {

@@ -25,6 +25,11 @@
 //   GET  /api/promos                           → { ok, promos }     (público: las usa la app del jugador)
 //   POST /api/panel/promos     { canchaId, fecha, hora, precio } → { ok, promo }
 //   DELETE /api/panel/promos/<id>              → { ok, promo }
+//   GET  /api/mi-estado                        → { ok, puntaje, semaforo: { color, texto }, mensaje } (del jugador logueado)
+//   GET  /api/panel/clientes                   → { ok, clientes }   (del puntaje más bajo al más alto)
+//   GET  /api/panel/clientes/<telefono>        → { ok, ...cliente, fijos, eventos }  (historial, del más nuevo al más viejo)
+//   GET  /api/panel/alertas                    → { ok, alertas }    (nivel: 'baja' | 'avisar' | 'riesgo')
+//        reglas del puntaje: COMPLEJO.puntaje en datos.js (en Django, ajustes del complejo)
 //   GET  /api/panel/fijos                      → { ok, fijos }
 //   POST /api/panel/fijos/fechas/<fijo-ID-AAAA-MM-DD>/cancelar { avisoEn } → { ok, reserva, cancelacion }
 //        cancelacion: { fecha, avisoEn, registradaEn, anticipacionHoras }  (la usa el puntaje)
@@ -183,6 +188,21 @@ var Store = RESERVANDO_MODO !== 'api' ? Store : (() => {
     },
     async marcarSenaEfectivo(reservaId) {
       return api('POST', `/panel/reservas/${enLaRuta(reservaId)}/sena`, { medio: 'efectivo' });
+    },
+
+    // ----- Puntaje de clientes -----
+    async miEstado() {
+      const r = await api('GET', '/mi-estado');
+      return r.ok ? { puntaje: r.puntaje, semaforo: r.semaforo, mensaje: r.mensaje } : null;
+    },
+    async clientes() {
+      const r = await api('GET', '/panel/clientes');
+      return r.ok ? r.clientes : [];
+    },
+    async fichaCliente(telefono) { return api('GET', `/panel/clientes/${enLaRuta(telefono)}`); },
+    async alertas() {
+      const r = await api('GET', '/panel/alertas');
+      return r.ok ? r.alertas : [];
     },
 
     // ----- Señas pendientes y promos -----

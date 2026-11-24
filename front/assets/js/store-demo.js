@@ -27,6 +27,7 @@ var Store = RESERVANDO_MODO !== 'demo' ? undefined : (() => {
     canceladas: 'canceladas',    // reservas que canceló el jugador (sirven para el puntaje)
     liberadas: 'liberadas',      // reservas que liberó el dueño porque no llegó la seña
     promos: 'promos',            // turnos libres que el dueño puso en promo
+    fijosBorrados: 'fijos-borrados', // fijos dados de baja: se guardan para el historial del puntaje
     fijos: 'fijos',
     marcasFijos: 'marcas-fijos', // asistencia y seña de cada día de un turno fijo
     codigos: 'codigos',          // códigos simulados enviados por "WhatsApp"
@@ -40,9 +41,7 @@ var Store = RESERVANDO_MODO !== 'demo' ? undefined : (() => {
   const AMBITOS = ['jugador', 'panel'];
   const ORIGENES = ['web', 'manual'];
   const MEDIOS_SENA = ['mercadopago', 'transferencia', 'efectivo'];
-  // A DEFINIR (tarea del viernes, puntaje): depende de la anticipación y de si es reincidente.
-  // Por ahora toda cancelación baja lo mismo.
-  const PUNTOS_POR_CANCELAR = 15;
+
   const oyentes = [];
 
   // ---------- localStorage ----------
@@ -78,6 +77,116 @@ var Store = RESERVANDO_MODO !== 'demo' ? undefined : (() => {
   const buscarCancha = (canchaId) => COMPLEJO.canchas.find((cancha) => cancha.id === canchaId);
   const senaDe = (horas) => COMPLEJO.senaPorHora * horas;
   const seSuperponen = (a, b) => a.hora < b.hora + b.horas && b.hora < a.hora + a.horas;
+
+  // ---------- Puntaje de confiabilidad ----------
+  // Cada jugador (por teléfono) arranca en 100. Baja cuando cancela o falta, según la anticipación del aviso
+  // y cuántas veces lo hizo antes en los últimos 60 días. Sube un poco cada vez que viene.
+  // Los valores están en COMPLEJO.puntaje (datos.js). El sistema nunca da de baja a nadie: avisa, decide el dueño.
+
+  const REGLAS = () => COMPLEJO.puntaje;
+
+  function semaforoDe(puntaje) {
+    const r = REGLAS();
+    if (puntaje >= r.verdeDesde) return { color: 'verde', texto: 'Al día' };
+    if (puntaje >= r.amarilloDesde) return { color: 'amarillo', texto: 'En observación' };
+    return { color: 'rojo', texto: 'En riesgo' };
+  }
+
+  function puntosPorAnticipacion(horas) {
+    const tramo = REGLAS().porAnticipacion.find((t) => horas >= t.desdeHoras);
+    return tramo ? tramo.puntos : REGLAS().masAlTope;
+  }
+
+  // Todo lo que suma o resta para un teléfono, ordenado por cuándo pasó.
+  // evento: { tipo: 'cancelo' | 'cancelo-fijo' | 'no-vino' | 'vino', cuando (ISO), fecha, hora, canchaId, anticipacionHoras, cargadoPor }
+  function eventosDe(telefono) {
+    const eventos = [];
+    const turno = (r) => ({ fecha: r.fecha, hora: r.hora, canchaId: r.canchaId });
+    leer(CLAVES.canceladas, []).filter((r) => r.telefono === telefono).forEach((r) => {
+      eventos.push(Object.assign(turno(r), {
+        tipo: 'cancelo', cuando: r.canceladaEn, cargadoPor: 'jugador',
+        anticipacionHoras: Math.round(((inicioDelTurno(r.fecha, r.hora) - new Date(r.canceladaEn)) / 3600000) * 10) / 10,
+      }));
+    });
+    leer(CLAVES.reservas, []).filter((r) => r.telefono === telefono && r.asistencia).forEach((r) => {
+      eventos.push(Object.assign(turno(r), {
+        tipo: r.asistencia === 'vino' ? 'vino' : 'no-vino', cuando: inicioDelTurno(r.fecha, r.hora).toISOString(), cargadoPor: 'dueño',
+      }));
+    });
+    const marcas = leer(CLAVES.marcasFijos, {});
+    // También los fijos dados de baja: la historia del jugador no se borra con el fijo
+    fijosGuardados().concat(leer(CLAVES.fijosBorrados, [])).filter((f) => f.telefono === telefono).forEach((fijo) => {
+      (fijo.cancelaciones || []).forEach((c) => {
+        eventos.push({ tipo: 'cancelo-fijo', cuando: c.avisoEn, fecha: c.fecha, hora: fijo.hora, canchaId: fijo.canchaId,
+          anticipacionHoras: c.anticipacionHoras, cargadoPor: 'dueño' });
+      });
+      Object.entries(marcas).forEach(([id, marca]) => {
+        if (!marca.asistencia || !id.startsWith(`fijo-${fijo.id}-`)) return;
+        const fecha = id.slice(-10);
+        eventos.push({ tipo: marca.asistencia === 'vino' ? 'vino' : 'no-vino', cuando: inicioDelTurno(fecha, fijo.hora).toISOString(),
+          fecha, hora: fijo.hora, canchaId: fijo.canchaId, cargadoPor: 'dueño' });
+      });
+    });
+    return eventos.sort((a, b) => a.cuando.localeCompare(b.cuando));
+  }
+
+  const restaPuntos = (evento) => evento.tipo === 'cancelo' || evento.tipo === 'cancelo-fijo' || evento.tipo === 'no-vino';
+
+  // Recorre los eventos en orden y calcula los puntos de cada uno y el puntaje que fue quedando
+  function calcularPuntaje(eventos) {
+    const r = REGLAS();
+    const ventanaMs = r.ventanaDias * 86400000;
+    let puntaje = r.inicial;
+    const detalle = eventos.map((evento, i) => {
+      let puntos;
+      if (evento.tipo === 'vino') {
+        puntos = Math.min(r.vino, r.inicial - puntaje);
+      } else {
+        const base = evento.tipo === 'no-vino' ? r.noVino : puntosPorAnticipacion(evento.anticipacionHoras);
+        const momento = Date.parse(evento.cuando);
+        const anteriores = eventos.slice(0, i)
+          .filter((otro) => restaPuntos(otro) && momento - Date.parse(otro.cuando) <= ventanaMs).length;
+        const multiplicador = 1 + r.reincidencia * anteriores;
+        puntos = -Math.min(Math.round(base * multiplicador), puntaje);
+        evento = Object.assign({}, evento, { base, multiplicador });
+      }
+      puntaje += puntos;
+      return Object.assign({}, evento, { puntos, puntajeDespues: puntaje });
+    });
+    const desde = Date.now() - ventanaMs;
+    return {
+      puntaje,
+      semaforo: semaforoDe(puntaje),
+      eventos: detalle,
+      cancelacionesRecientes: eventos.filter((e) => restaPuntos(e) && Date.parse(e.cuando) >= desde).length,
+    };
+  }
+
+  // Todos los teléfonos que pasaron por el complejo, con el nombre más reciente que usaron
+  function telefonosConocidos() {
+    const nombres = {};
+    const anotar = (telefono, nombre, cuando) => {
+      if (!telefono) return;
+      if (!nombres[telefono] || (cuando || '') >= nombres[telefono].cuando) nombres[telefono] = { nombre, cuando: cuando || '' };
+    };
+    leer(CLAVES.reservas, []).forEach((r) => anotar(r.telefono, r.nombre, r.creadaEn));
+    leer(CLAVES.canceladas, []).forEach((r) => anotar(r.telefono, r.nombre, r.creadaEn));
+    fijosGuardados().concat(leer(CLAVES.fijosBorrados, [])).forEach((f) => anotar(f.telefono, f.responsable, f.creadoEn));
+    return nombres;
+  }
+
+  function fichaDe(telefono, nombre) {
+    const calculo = calcularPuntaje(eventosDe(telefono));
+    const fijos = fijosGuardados().filter((f) => f.telefono === telefono);
+    return Object.assign({ telefono, nombre, esFijo: fijos.length > 0, fijos: copia(fijos) }, calculo);
+  }
+
+  // Lo que se le muestra al jugador en "Mis reservas", según el color
+  const MENSAJES_SEMAFORO = {
+    verde: '¡Gracias por avisar siempre a tiempo! Así el complejo puede darle el turno a otro.',
+    amarillo: 'Cancelaste algunas veces en los últimos días. Si cancelás de nuevo, el complejo puede revisar tus turnos.',
+    rojo: 'Tus cancelaciones bajaron mucho tu puntaje. El complejo lo tiene en cuenta para darte turnos fijos.',
+  };
 
   // ---------- Precios y promos ----------
   // Dos clases de promo:
@@ -555,16 +664,92 @@ var Store = RESERVANDO_MODO !== 'demo' ? undefined : (() => {
     // Lo que pierde el jugador si cancela. Se muestra ANTES de confirmar.
     // → { ok, senaSeDevuelve, senaPagada, sena, puntos }
     // En Django: GET a la vista de cancelación (las reglas las tiene el servidor)
+    // puntos: los que perdería si cancela ahora (según anticipación y reincidencia).
     impactoCancelacion(reservaId) {
       const reserva = buscarReserva(reservaId);
       if (!reserva || reserva.origen === 'fijo') return fallo('No encontramos esa reserva.');
+      const eventos = eventosDe(reserva.telefono);
+      const antes = calcularPuntaje(eventos);
+      const anticipacionHoras = Math.round(((inicioDelTurno(reserva.fecha, reserva.hora) - Date.now()) / 3600000) * 10) / 10;
+      const despues = calcularPuntaje(eventos.concat({
+        tipo: 'cancelo', cuando: new Date().toISOString(), fecha: reserva.fecha, hora: reserva.hora,
+        canchaId: reserva.canchaId, anticipacionHoras, cargadoPor: 'jugador',
+      }));
       return {
         ok: true,
         senaSeDevuelve: Boolean(COMPLEJO.cancelacionGratuita),
         senaPagada: reserva.senaPagada,
         sena: reserva.sena,
-        puntos: PUNTOS_POR_CANCELAR,
+        puntos: antes.puntaje - despues.puntaje,
+        puntajeDespues: despues.puntaje,
+        semaforoDespues: despues.semaforo,
       };
+    },
+
+    // ----- Puntaje de clientes -----
+
+    // Lo que ve el jugador en "Mis reservas": { puntaje, semaforo: { color, texto }, mensaje }
+    // En Django: GET a la vista del estado del jugador (por la sesión)
+    miEstado(telefono) {
+      const numero = normalizarTelefono(telefono);
+      if (!numero) return null;
+      const calculo = calcularPuntaje(eventosDe(numero));
+      return { puntaje: calculo.puntaje, semaforo: calculo.semaforo, mensaje: MENSAJES_SEMAFORO[calculo.semaforo.color] };
+    },
+
+    // [Cliente] del complejo, del puntaje más bajo al más alto (los que hay que mirar, primero)
+    // Cliente: { telefono, nombre, puntaje, semaforo, esFijo, cancelacionesRecientes, ultimoEvento }
+    // En Django: GET a la vista de clientes del panel
+    clientes() {
+      return Object.entries(telefonosConocidos())
+        .map(([telefono, { nombre }]) => {
+          const f = fichaDe(telefono, nombre);
+          const ultimo = f.eventos[f.eventos.length - 1];
+          return { telefono, nombre, puntaje: f.puntaje, semaforo: f.semaforo, esFijo: f.esFijo,
+            cancelacionesRecientes: f.cancelacionesRecientes, ultimoEvento: ultimo ? ultimo.cuando : null };
+        })
+        .sort((a, b) => a.puntaje - b.puntaje || a.nombre.localeCompare(b.nombre));
+    },
+
+    // Ficha completa con el historial: { ...Cliente, fijos, eventos: [{ tipo, cuando, fecha, hora, canchaId,
+    //   anticipacionHoras, base, multiplicador, puntos, puntajeDespues, cargadoPor }] } (del más nuevo al más viejo)
+    // En Django: GET a la vista de un cliente del panel
+    fichaCliente(telefono) {
+      const numero = normalizarTelefono(telefono);
+      const conocido = numero && telefonosConocidos()[numero];
+      if (!conocido) return fallo('No encontramos ese cliente.');
+      const ficha = fichaDe(numero, conocido.nombre);
+      ficha.eventos = ficha.eventos.slice().reverse();
+      return Object.assign({ ok: true }, ficha);
+    },
+
+    // Alertas para el dueño (pedido suyo, tal cual):
+    //   titular de un fijo con 2 cancelaciones en 60 días → "avisale"; con 3 → "considerá darlo de baja".
+    //   cualquier cliente en rojo → "en riesgo".
+    // → [{ nivel: 'baja' | 'avisar' | 'riesgo', telefono, nombre, puntaje, semaforo, cancelaciones, fijos, texto }]
+    // En Django: GET a la vista de alertas del panel
+    alertas() {
+      const r = REGLAS();
+      const dias = r.ventanaDias;
+      const alertas = [];
+      Object.entries(telefonosConocidos()).forEach(([telefono, { nombre }]) => {
+        const f = fichaDe(telefono, nombre);
+        const corto = nombre.trim().split(' ').length > 1
+          ? nombre.trim().split(' ')[0] + ' ' + nombre.trim().split(' ')[1][0] + '.' : nombre.trim();
+        const base = { telefono, nombre, puntaje: f.puntaje, semaforo: f.semaforo, cancelaciones: f.cancelacionesRecientes, fijos: f.fijos };
+        if (f.esFijo && f.cancelacionesRecientes >= r.alertaFijo.baja) {
+          alertas.push(Object.assign(base, { nivel: 'baja',
+            texto: `${corto} canceló ${f.cancelacionesRecientes} veces en ${dias} días. Considerá darle el turno fijo a otro.` }));
+        } else if (f.esFijo && f.cancelacionesRecientes >= r.alertaFijo.avisar) {
+          alertas.push(Object.assign(base, { nivel: 'avisar',
+            texto: `${corto} canceló ${f.cancelacionesRecientes} veces en ${dias} días. Avisale que si sigue puede perder el turno fijo.` }));
+        } else if (f.semaforo.color === 'rojo') {
+          alertas.push(Object.assign(base, { nivel: 'riesgo',
+            texto: `${corto} está en riesgo: ${f.puntaje} puntos por ${f.cancelacionesRecientes} cancelaciones o faltas.` }));
+        }
+      });
+      const orden = { baja: 0, avisar: 1, riesgo: 2 };
+      return alertas.sort((a, b) => orden[a.nivel] - orden[b.nivel] || a.puntaje - b.puntaje);
     },
 
     // El jugador cancela una reserva suya que todavía no empezó. El turno vuelve a quedar libre.
@@ -576,7 +761,8 @@ var Store = RESERVANDO_MODO !== 'demo' ? undefined : (() => {
       if (reserva.telefono !== normalizarTelefono(telefono)) return fallo('Esa reserva no es tuya.');
       if (yaEmpezo(reserva.fecha, reserva.hora)) return fallo('Ese turno ya empezó: no se puede cancelar.');
       guardar(CLAVES.reservas, reservas.filter((una) => una.id !== reservaId));
-      const cancelada = Object.assign({}, reserva, { canceladaEn: new Date().toISOString(), puntos: PUNTOS_POR_CANCELAR });
+      const impacto = api.impactoCancelacion(reservaId);
+      const cancelada = Object.assign({}, reserva, { canceladaEn: new Date().toISOString(), puntos: impacto.puntos });
       guardar(CLAVES.canceladas, leer(CLAVES.canceladas, []).concat(cancelada));
       avisar('reserva-cancelada', cancelada);
       return { ok: true, reserva: cancelada };
@@ -687,10 +873,8 @@ var Store = RESERVANDO_MODO !== 'demo' ? undefined : (() => {
       const turnoFijo = fijos.find((fijo) => fijo.id === id);
       if (!turnoFijo) return fallo('No encontramos ese turno fijo.');
       guardar(CLAVES.fijos, fijos.filter((fijo) => fijo.id !== id));
-      // Las marcas de asistencia y seña de ese fijo ya no sirven
-      const marcas = leer(CLAVES.marcasFijos, {});
-      Object.keys(marcas).filter((clave) => clave.startsWith(`fijo-${id}-`)).forEach((clave) => delete marcas[clave]);
-      guardar(CLAVES.marcasFijos, marcas);
+      // No se pierde la historia: sus cancelaciones y asistencias (marcasFijos) siguen contando para el puntaje
+      guardar(CLAVES.fijosBorrados, leer(CLAVES.fijosBorrados, []).concat(Object.assign({}, turnoFijo, { borradoEn: new Date().toISOString() })));
       avisar('fijo-borrado', turnoFijo);
       return { ok: true, turnoFijo };
     },

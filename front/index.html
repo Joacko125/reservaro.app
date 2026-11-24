@@ -664,6 +664,20 @@
         </button>
       </div>
 
+      <!-- Semáforo del jugador: su puntaje de confiabilidad en este complejo (Store.miEstado) -->
+      <div x-show="miEstado" class="mt-5 flex items-start gap-3 rounded-3xl p-4 ring-1 ring-inset"
+           :class="{ verde: 'bg-libre/10 ring-libre/30', amarillo: 'bg-fijo/10 ring-fijo/40', rojo: 'bg-alerta/10 ring-alerta/40' }[miEstado?.semaforo.color]">
+        <span class="mt-0.5 grid h-10 w-10 shrink-0 place-items-center rounded-full font-titulo text-sm font-extrabold tabular-nums"
+              :class="{ verde: 'bg-libre text-white', amarillo: 'bg-fijo text-marca-oscuro', rojo: 'bg-alerta text-white' }[miEstado?.semaforo.color]"
+              x-text="miEstado?.puntaje"></span>
+        <div class="min-w-0">
+          <p class="text-sm font-bold">
+            Tu puntaje: <span x-text="miEstado?.semaforo.texto"></span>
+          </p>
+          <p class="mt-0.5 text-xs text-marca-claro/70" x-text="miEstado?.mensaje"></p>
+        </div>
+      </div>
+
       <!-- Lista. En Django: {% for reserva in reservas %} -->
       <!-- Mis reservas: cargando y error -->
       <div x-show="estadoMisReservas === 'cargando'" class="mt-5 animate-pulse space-y-3" aria-busy="true">
