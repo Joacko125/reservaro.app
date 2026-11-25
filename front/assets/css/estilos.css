@@ -41,3 +41,28 @@ html {
 @media (prefers-reduced-motion: reduce) {
   .turno-promo { animation: none; }
 }
+
+/* ---------- Animaciones del panel ----------
+   Antes estaban en un <style type="text/tailwindcss"> del panel, que solo entiende el Tailwind del CDN
+   (en producción se perdían). El color del destello sale de la variable del club (config.js). */
+@keyframes destello {
+  0%   { box-shadow: 0 0 0 0 rgb(var(--club) / 0.8); transform: scale(1); }
+  12%  { transform: scale(1.045); }
+  30%  { transform: scale(1); }
+  100% { box-shadow: 0 0 0 22px rgb(var(--club) / 0); transform: scale(1); }
+}
+@keyframes aviso-entra {
+  0%   { opacity: 0; transform: translateY(24px) scale(.94); }
+  60%  { opacity: 1; transform: translateY(-4px) scale(1.02); }
+  100% { opacity: 1; transform: translateY(0) scale(1); }
+}
+@keyframes vaciar { from { transform: scaleX(1); } to { transform: scaleX(0); } }
+@keyframes hoja-sube { from { transform: translateY(100%); } to { transform: translateY(0); } }
+@keyframes menu-entra { from { opacity: 0; transform: scale(.95); } to { opacity: 1; transform: scale(1); } }
+
+.destello { animation: destello 1.2s ease-out 4; }
+.aviso-entra { animation: aviso-entra .5s cubic-bezier(.2, .9, .3, 1.2) both; }
+.vaciar { animation: vaciar 6.5s linear forwards; transform-origin: left; }
+.hoja-sube { animation: hoja-sube .35s cubic-bezier(.2, .9, .3, 1) both; }
+/* Animación solo de entrada: con x-transition, Alpine esperaba la salida del menú para ocultar el panel al salir */
+.menu-entra { animation: menu-entra .15s ease-out both; transform-origin: top right; }

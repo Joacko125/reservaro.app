@@ -110,6 +110,8 @@ var Store = RESERVANDO_MODO !== 'api' ? Store : (() => {
     if (!pedidoComplejo) {
       pedidoComplejo = api('GET', '/complejo').then((r) => {
         if (!r.ok) throw new Error('API: no se pudo leer el complejo');
+        // El color del club viene del servidor (cada complejo el suyo)
+        if (typeof aplicarColoresClub === 'function') aplicarColoresClub(r.complejo.colores);
         return r.complejo;
       });
       pedidoComplejo.catch(() => { pedidoComplejo = null; }); // si falló, el "Reintentar" vuelve a pedir

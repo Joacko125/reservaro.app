@@ -1,0 +1,4 @@
+/* Lo que compila Tailwind para producción. Los estilos propios siguen en front/assets/css/estilos.css. */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;

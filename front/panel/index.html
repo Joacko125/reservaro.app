@@ -8,6 +8,8 @@
   <link rel="icon" type="image/svg+xml" href="/assets/img/favicon.svg">
 
   <!-- 1. Tailwind -->
+  <!-- Tailwind: en desarrollo se arma en el navegador (CDN). En producción, build/construir.sh
+       reemplaza esta línea por el CSS ya compilado (/assets/css/tailwind.css). -->
   <script src="https://cdn.tailwindcss.com"></script>
   <!-- Datos del complejo antes de config.js: de acá salen los colores del club -->
   <script src="/assets/js/datos.js"></script>
@@ -19,7 +21,7 @@
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700;800&family=Inter:wght@400;500;600;700&display=swap">
   <link rel="stylesheet" href="/assets/css/estilos.css">
   <!-- 4. Íconos -->
-  <script src="https://unpkg.com/lucide@0.460.0/dist/umd/lucide.min.js"></script>
+  <script src="/assets/vendor/lucide-0.460.0.min.js"></script>
   <!-- 5. Datos y utilidades compartidas -->
   <script src="/assets/js/formato.js"></script>
   <!-- modo.js elige de dónde salen los datos: demo (store-demo.js) o API de Django (store-api.js) -->
@@ -31,33 +33,8 @@
   <script src="/assets/js/login-telefono.js"></script>
   <script src="/assets/js/panel.js"></script>
   <!-- 7. Alpine, último -->
-  <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+  <script defer src="/assets/vendor/alpinejs-3.17.5.min.js"></script>
   <!-- Animaciones del panel. Usan los tokens de config.js vía theme(). -->
-  <style type="text/tailwindcss">
-    @keyframes destello {
-      0%   { box-shadow: 0 0 0 0 theme('colors.club.DEFAULT / 80%'); transform: scale(1); }
-      12%  { transform: scale(1.045); }
-      30%  { transform: scale(1); }
-      100% { box-shadow: 0 0 0 22px theme('colors.club.DEFAULT / 0%'); transform: scale(1); }
-    }
-    @keyframes aviso-entra {
-      0%   { opacity: 0; transform: translateY(24px) scale(.94); }
-      60%  { opacity: 1; transform: translateY(-4px) scale(1.02); }
-      100% { opacity: 1; transform: translateY(0) scale(1); }
-    }
-    @keyframes vaciar { from { transform: scaleX(1); } to { transform: scaleX(0); } }
-    @keyframes hoja-sube { from { transform: translateY(100%); } to { transform: translateY(0); } }
-    @keyframes menu-entra { from { opacity: 0; transform: scale(.95); } to { opacity: 1; transform: scale(1); } }
-
-    @layer utilities {
-      .destello { animation: destello 1.2s ease-out 4; }
-      .aviso-entra { animation: aviso-entra .5s cubic-bezier(.2, .9, .3, 1.2) both; }
-      .vaciar { animation: vaciar 6.5s linear forwards; transform-origin: left; }
-      .hoja-sube { animation: hoja-sube .35s cubic-bezier(.2, .9, .3, 1) both; }
-      /* Animación solo de entrada: con x-transition, Alpine esperaba la salida del menú para ocultar el panel al salir */
-      .menu-entra { animation: menu-entra .15s ease-out both; transform-origin: top right; }
-    }
-  </style>
 </head>
 
 <body class="min-h-screen bg-marca-claro font-texto text-marca-oscuro antialiased">

@@ -1,0 +1,3 @@
+# Build de producción (se genera con build/construir.sh)
+dist/
+build/.bin/

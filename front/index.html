@@ -8,6 +8,8 @@
   <link rel="icon" type="image/svg+xml" href="/assets/img/favicon.svg">
 
   <!-- Orden de la sección 5 de CLAUDE.md -->
+  <!-- Tailwind: en desarrollo se arma en el navegador (CDN). En producción, build/construir.sh
+       reemplaza esta línea por el CSS ya compilado (/assets/css/tailwind.css). -->
   <script src="https://cdn.tailwindcss.com"></script>
   <!-- Datos del complejo antes de config.js: de acá salen los colores del club -->
   <script src="/assets/js/datos.js"></script>
@@ -16,7 +18,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700;800&family=Inter:wght@400;500;600;700&display=swap">
   <link rel="stylesheet" href="/assets/css/estilos.css">
-  <script src="https://unpkg.com/lucide@0.460.0/dist/umd/lucide.min.js"></script>
+  <script src="/assets/vendor/lucide-0.460.0.min.js"></script>
   <script src="/assets/js/formato.js"></script>
   <!-- modo.js elige de dónde salen los datos: demo (store-demo.js) o API de Django (store-api.js) -->
   <script src="/assets/js/modo.js"></script>
@@ -26,7 +28,7 @@
   <script src="/assets/js/plano.js"></script>
   <script src="/assets/js/login-telefono.js"></script>
   <script src="/assets/js/jugador.js"></script>
-  <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+  <script defer src="/assets/vendor/alpinejs-3.17.5.min.js"></script>
 
   <!-- Tilde animado de la confirmación -->
   <style>
